@@ -12,11 +12,10 @@ export default function VideoPlayer({ swapped }) {
   } = useRoom();
 
   const videoRef = useRef(null);
-  const sourceVideoRef = useRef(null); // the actual video element playing the file (visible)
   const captureStreamRef = useRef(null);
-  const objectUrlRef = useRef(null);
   const fileInputRef = useRef(null);
   const [hasFile, setHasFile] = useState(false);
+  const [needsUserPlay, setNeedsUserPlay] = useState(false); // viewer must tap to unmute
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [paused, setPaused] = useState(true);
@@ -33,13 +32,11 @@ export default function VideoPlayer({ swapped }) {
     if (!file) return;
 
     const url = URL.createObjectURL(file);
-    objectUrlRef.current = url;
     trackObjectUrl(url);
 
     const vid = videoRef.current;
     if (!vid) return;
 
-    // Reset: clear any srcObject, use src for file playback
     vid.srcObject = null;
     vid.src = url;
     vid.load();
@@ -48,7 +45,6 @@ export default function VideoPlayer({ swapped }) {
       setDuration(vid.duration);
       setHasFile(true);
 
-      // Capture stream from the VISIBLE playing element
       let stream = null;
       if (vid.captureStream) {
         stream = vid.captureStream();
@@ -56,39 +52,54 @@ export default function VideoPlayer({ swapped }) {
         stream = vid.mozCaptureStream();
       }
       captureStreamRef.current = stream;
-      sourceVideoRef.current = vid;
       trackVideoElement(vid);
 
-      // Send to peer if already connected
       if (stream && status === 'connected') {
         sendVideoStream(stream);
-        beginHeartbeat(vid);
+        startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
       }
     };
   };
 
-  // ─── Send stream when peer connects (if file already loaded) ───
+  // Send stream when peer connects (if file already loaded)
   useEffect(() => {
     if (isStreamer && status === 'connected' && captureStreamRef.current) {
       sendVideoStream(captureStreamRef.current);
-      if (sourceVideoRef.current) beginHeartbeat(sourceVideoRef.current);
+      const vid = videoRef.current;
+      if (vid) startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
   // ─── Viewer: attach remote video stream ───
+  // Don't autoplay with audio — show a "Tap to Watch" overlay instead.
+  // This is the ONLY reliable cross-platform approach for mobile.
   useEffect(() => {
     if (!isStreamer && remoteStream && videoRef.current && !swapped) {
-      videoRef.current.src = '';
-      videoRef.current.srcObject = remoteStream;
-      // Must be muted first for autoplay policy, then unmute
-      videoRef.current.muted = true;
-      videoRef.current.play().then(() => {
-        // Unmute after playback starts (autoplay policy workaround)
-        videoRef.current.muted = false;
-      }).catch(() => {});
+      const vid = videoRef.current;
+      vid.src = '';
+      vid.srcObject = remoteStream;
+      vid.muted = true; // muted autoplay is allowed everywhere
+      vid.play()
+        .then(() => {
+          // Video is playing muted — prompt user to tap for audio
+          setNeedsUserPlay(true);
+        })
+        .catch(() => {
+          // Autoplay blocked entirely (rare) — also show tap overlay
+          setNeedsUserPlay(true);
+        });
     }
   }, [remoteStream, isStreamer, swapped]);
+
+  // Viewer taps "Start Watching" — this is a real user gesture so unmute works
+  const handleViewerTap = () => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    vid.muted = false;
+    vid.play().catch(() => {});
+    setNeedsUserPlay(false);
+  };
 
   // ─── Swapped mode ───
   useEffect(() => {
@@ -102,13 +113,12 @@ export default function VideoPlayer({ swapped }) {
       vid.srcObject = remoteStream;
       vid.play().catch(() => {});
     }
-    // For streamer in non-swapped mode, the src is already the file — no change needed
   }, [swapped, remoteCameraStream, remoteStream, isStreamer]);
 
   // ─── Sync: viewer receives events from streamer ───
   useEffect(() => {
     onSyncEvent((msg) => {
-      if (isStreamer) return; // Streamer doesn't receive sync — they send it
+      if (isStreamer) return;
 
       const vid = videoRef.current;
       if (!vid) return;
@@ -122,10 +132,8 @@ export default function VideoPlayer({ swapped }) {
           break;
         case 'seek':
           showSyncing();
-          // Can't seek a MediaStream, but the source already seeked so stream will catch up
           break;
         case 'sync-heartbeat': {
-          // Sync play/pause state
           if (msg.paused && !vid.paused) vid.pause();
           else if (!msg.paused && vid.paused) vid.play().catch(() => {});
           break;
@@ -214,11 +222,7 @@ export default function VideoPlayer({ swapped }) {
     }, 3000);
   };
 
-  function beginHeartbeat(vid) {
-    startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
-  }
-
-  // ─── Cleanup on unmount ───
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopHeartbeat();
@@ -257,6 +261,21 @@ export default function VideoPlayer({ swapped }) {
           playsInline
           onClick={isStreamer ? togglePlay : undefined}
         />
+
+        {/* Viewer: tap to unmute/start — required for mobile audio+video */}
+        {needsUserPlay && !isStreamer && (
+          <div className={styles.overlay} onClick={handleViewerTap} style={{ cursor: 'pointer' }}>
+            <div className={styles.tapToWatch}>
+              <div className={styles.tapIcon}>
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="white">
+                  <polygon points="5,3 19,12 5,21" />
+                </svg>
+              </div>
+              <h3>Tap to Start Watching</h3>
+              <p>Tap anywhere to enable audio and video</p>
+            </div>
+          </div>
+        )}
 
         {/* Streamer: file picker overlay */}
         {!hasFile && isStreamer && !swapped && (
@@ -301,9 +320,8 @@ export default function VideoPlayer({ swapped }) {
         )}
       </div>
 
-      {/* Controls — full controls for streamer, minimal for viewer */}
+      {/* Controls */}
       <div className={`${styles.controls} ${showControls || paused ? styles.visible : ''}`}>
-        {/* Progress bar — streamer can seek, viewer sees read-only progress */}
         <div className={styles.progressRow}>
           <div className={styles.progressTrack}>
             <div className={styles.progressFill} style={{ width: `${progressPct}%` }} />

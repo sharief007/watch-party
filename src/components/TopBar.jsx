@@ -5,10 +5,30 @@ export default function TopBar({ chatOpen, onToggleChat }) {
   const {
     status, role, roomName, leaveRoom,
     cameraEnabled, micEnabled, toggleCamera, toggleMic,
+    localCameraStream, startCamera,
     unreadCount,
   } = useRoom();
 
   const statusLabel = status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting...' : 'Disconnected';
+
+  // First tap on camera button starts the camera (user gesture required for mobile).
+  // Subsequent taps toggle enable/disable.
+  const handleCameraClick = async () => {
+    if (!localCameraStream) {
+      await startCamera();
+    } else {
+      toggleCamera();
+    }
+  };
+
+  const handleMicClick = () => {
+    if (!localCameraStream) {
+      // Mic requires camera to be started first (they share the same getUserMedia call)
+      startCamera();
+    } else {
+      toggleMic();
+    }
+  };
 
   return (
     <header className={styles.bar}>
@@ -30,18 +50,11 @@ export default function TopBar({ chatOpen, onToggleChat }) {
 
       <div className={styles.right}>
         <button
-          className={`${styles.iconBtn} ${!micEnabled ? styles.off : ''}`}
-          onClick={toggleMic}
-          title={micEnabled ? 'Mute mic' : 'Unmute mic'}
+          className={`${styles.iconBtn} ${localCameraStream && !micEnabled ? styles.off : ''} ${!localCameraStream ? styles.inactive : ''}`}
+          onClick={handleMicClick}
+          title={!localCameraStream ? 'Enable mic' : micEnabled ? 'Mute mic' : 'Unmute mic'}
         >
-          {micEnabled ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
-              <path d="M19 10v2a7 7 0 01-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
-          ) : (
+          {localCameraStream && !micEnabled ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="1" y1="1" x2="23" y2="23" />
               <path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6" />
@@ -49,23 +62,30 @@ export default function TopBar({ chatOpen, onToggleChat }) {
               <line x1="12" y1="19" x2="12" y2="23" />
               <line x1="8" y1="23" x2="16" y2="23" />
             </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+              <path d="M19 10v2a7 7 0 01-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
           )}
         </button>
 
         <button
-          className={`${styles.iconBtn} ${!cameraEnabled ? styles.off : ''}`}
-          onClick={toggleCamera}
-          title={cameraEnabled ? 'Disable camera' : 'Enable camera'}
+          className={`${styles.iconBtn} ${localCameraStream && !cameraEnabled ? styles.off : ''} ${!localCameraStream ? styles.inactive : ''}`}
+          onClick={handleCameraClick}
+          title={!localCameraStream ? 'Enable camera' : cameraEnabled ? 'Disable camera' : 'Enable camera'}
         >
-          {cameraEnabled ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M23 7l-7 5 7 5V7z" />
-              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-            </svg>
-          ) : (
+          {localCameraStream && !cameraEnabled ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.66 0H14a2 2 0 012 2v3.34l1 1L23 7v10" />
               <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M23 7l-7 5 7 5V7z" />
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
             </svg>
           )}
         </button>

@@ -101,6 +101,14 @@
   background: var(--glass-light);
   color: var(--text-100);
 }
+.iconBtn.inactive {
+  opacity: 0.4;
+}
+.iconBtn.inactive:hover {
+  opacity: 0.8;
+  background: rgba(108, 92, 231, 0.15);
+  color: var(--accent-light);
+}
 .iconBtn.off {
   color: var(--red);
 }

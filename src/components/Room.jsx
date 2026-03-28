@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRoom } from '../contexts/RoomContext';
 import TopBar from './TopBar';
 import VideoPlayer from './VideoPlayer';
@@ -7,15 +7,8 @@ import CameraOverlay from './CameraOverlay';
 import styles from './Room.module.css';
 
 export default function Room() {
-  const { role, status, startCamera } = useRoom();
   const [chatOpen, setChatOpen] = useState(false);
-  const [swapped, setSwapped] = useState(false); // swap main video ↔ camera
-
-  useEffect(() => {
-    if (status === 'connected') {
-      startCamera();
-    }
-  }, [status, startCamera]);
+  const [swapped, setSwapped] = useState(false);
 
   return (
     <div className={styles.room}>
