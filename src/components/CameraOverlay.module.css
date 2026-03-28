@@ -1,0 +1,87 @@
+.overlay {
+  position: absolute;
+  bottom: 80px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-900);
+  border: 2px solid rgba(255,255,255,0.08);
+  box-shadow: var(--shadow-lg);
+  cursor: grab;
+  touch-action: none;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: fadeIn 0.3s ease-out;
+}
+.overlay:active {
+  cursor: grabbing;
+}
+
+.videoBox {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--bg-800);
+}
+
+.local {
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* fills the box, crops if aspect ratio differs */
+  display: block;
+}
+
+.label {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: white;
+  background: rgba(0,0,0,0.5);
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(0,0,0,0.3);
+}
+
+.ctrlBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgba(255,255,255,0.06);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-300);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ctrlBtn:hover {
+  background: rgba(255,255,255,0.15);
+  color: white;
+}
+
+@media (max-width: 600px) {
+  .overlay {
+    bottom: 70px;
+    right: 8px;
+  }
+}

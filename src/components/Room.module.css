@@ -1,0 +1,27 @@
+.room {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-900);
+}
+
+.content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+.videoSection {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .content {
+    flex-direction: column;
+  }
+}
