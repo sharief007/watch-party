@@ -15,6 +15,7 @@ export default function VideoPlayer({ swapped }) {
   const captureStreamRef = useRef(null);
   const fileInputRef = useRef(null);
   const [hasFile, setHasFile] = useState(false);
+  const [needsStreamerStart, setNeedsStreamerStart] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
   const [needsUserPlay, setNeedsUserPlay] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -38,6 +39,7 @@ export default function VideoPlayer({ swapped }) {
     setVideoEnded(false);
     setCurrentTime(0);
     setPaused(true);
+    setNeedsStreamerStart(false);
 
     const url = URL.createObjectURL(file);
     trackObjectUrl(url);
@@ -66,6 +68,10 @@ export default function VideoPlayer({ swapped }) {
         sendVideoStream(stream);
         startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
       }
+
+      // Show the start-streaming overlay — requires a real user gesture
+      // to satisfy autoplay policy on all browsers/mobile
+      setNeedsStreamerStart(true);
     };
 
     // Reset file input so same file can be re-selected
@@ -106,6 +112,15 @@ export default function VideoPlayer({ swapped }) {
         });
     }
   }, [remoteStream, isStreamer, swapped]);
+
+  // Streamer taps "Start Streaming" — real user gesture satisfies autoplay policy
+  const handleStreamerStart = () => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    vid.play().catch(() => {});
+    sendSyncEvent('play', vid.currentTime);
+    setNeedsStreamerStart(false);
+  };
 
   // Viewer taps "Start Watching" — this is a real user gesture so unmute works
   const handleViewerTap = () => {
@@ -175,6 +190,7 @@ export default function VideoPlayer({ swapped }) {
     const onEnded = () => {
       if (isStreamer) {
         setVideoEnded(true);
+        setNeedsStreamerStart(false);
         setPaused(true);
         sendSyncEvent('pause', vid.currentTime);
       }
@@ -305,7 +321,6 @@ export default function VideoPlayer({ swapped }) {
           ref={videoRef}
           className={styles.video}
           playsInline
-          onClick={isStreamer ? togglePlay : undefined}
         />
 
         {/* Viewer: tap to unmute/start — required for mobile audio+video */}
@@ -319,6 +334,21 @@ export default function VideoPlayer({ swapped }) {
               </div>
               <h3>Tap to Start Watching</h3>
               <p>Tap anywhere to enable audio and video</p>
+            </div>
+          </div>
+        )}
+
+        {/* Streamer: tap to begin playback after selecting a file */}
+        {needsStreamerStart && isStreamer && (
+          <div className={styles.overlay} onClick={handleStreamerStart} style={{ cursor: 'pointer' }}>
+            <div className={styles.tapToWatch}>
+              <div className={styles.tapIcon}>
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="white">
+                  <polygon points="5,3 19,12 5,21" />
+                </svg>
+              </div>
+              <h3>Start Streaming</h3>
+              <p>Tap anywhere to begin playback for everyone</p>
             </div>
           </div>
         )}
