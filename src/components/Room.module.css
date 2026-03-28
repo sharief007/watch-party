@@ -24,4 +24,11 @@
   .content {
     flex-direction: column;
   }
+
+  /* YouTube-style: video on top, chat below */
+  .content.chatOpen .videoSection {
+    flex: none;
+    /* 16:9 of screen width, capped at 40% of viewport height */
+    height: min(56.25vw, 40vh);
+  }
 }

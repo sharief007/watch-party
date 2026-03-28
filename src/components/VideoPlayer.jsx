@@ -22,6 +22,7 @@ export default function VideoPlayer({ swapped }) {
   const [paused, setPaused] = useState(true);
   const [volume, setVolume] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [mobileFullscreen, setMobileFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const controlsTimer = useRef(null);
   const containerRef = useRef(null);
@@ -229,6 +230,23 @@ export default function VideoPlayer({ swapped }) {
   };
 
   const toggleFullscreen = () => {
+    // Exit CSS-rotation fullscreen
+    if (mobileFullscreen) {
+      setMobileFullscreen(false);
+      return;
+    }
+
+    // On mobile with a landscape (rectangular) video, rotate rather than
+    // using requestFullscreen (which is unsupported on iOS Safari).
+    const isMobile = window.innerWidth <= 768 || navigator.maxTouchPoints > 0;
+    const vid = videoRef.current;
+    const isLandscape = vid && vid.videoWidth > 0 && vid.videoWidth > vid.videoHeight;
+    if (isMobile && isLandscape) {
+      setMobileFullscreen(true);
+      return;
+    }
+
+    // Desktop / portrait video: use native fullscreen
     if (document.fullscreenElement) {
       document.exitFullscreen();
     } else {
@@ -278,7 +296,7 @@ export default function VideoPlayer({ swapped }) {
   return (
     <div
       ref={containerRef}
-      className={styles.container}
+      className={`${styles.container} ${mobileFullscreen ? styles.mobileFullscreen : ''}`}
       onMouseMove={showControlsTemporarily}
       onTouchStart={showControlsTemporarily}
     >
@@ -470,7 +488,7 @@ export default function VideoPlayer({ swapped }) {
 
             <button className={styles.ctrlBtn} onClick={toggleFullscreen} title="Fullscreen">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                {isFullscreen ? (
+                {isFullscreen || mobileFullscreen ? (
                   <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M3 16h3a2 2 0 012 2v3M16 21v-3a2 2 0 012-2h3" />
                 ) : (
                   <path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3" />

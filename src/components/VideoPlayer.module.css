@@ -362,3 +362,24 @@
   .time { font-size: 0.7rem; }
   .ctrlBtn { width: 36px; height: 36px; }
 }
+
+/* ─── Mobile fullscreen: CSS rotation for landscape videos ─── */
+/* Covers the viewport and rotates the video 90deg so a landscape  */
+/* video fills the full portrait screen — works on iOS Safari too. */
+.mobileFullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: hidden;
+  background: #000;
+}
+
+.mobileFullscreen .videoWrapper {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* Swap vw/vh so the element is landscape-sized */
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
+}

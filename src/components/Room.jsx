@@ -14,7 +14,7 @@ export default function Room() {
     <div className={styles.room}>
       <TopBar chatOpen={chatOpen} onToggleChat={() => setChatOpen(o => !o)} />
 
-      <div className={styles.content}>
+      <div className={`${styles.content} ${chatOpen ? styles.chatOpen : ''}`}>
         <div className={styles.videoSection}>
           <VideoPlayer swapped={swapped} />
           <CameraOverlay swapped={swapped} onSwap={() => setSwapped(s => !s)} />

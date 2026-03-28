@@ -162,18 +162,32 @@
   transform: none;
 }
 
-/* Mobile: slide up from bottom */
+/* Mobile: in-flow below video (YouTube style) */
 @media (max-width: 768px) {
   .panel {
+    /* Switch from absolute overlay to normal flow */
+    position: relative;
     width: 100%;
     top: auto;
-    height: 55%;
+    right: auto;
+    bottom: auto;
+    flex: 0;
+    /* Collapse with max-height transition */
+    max-height: 0;
+    overflow: hidden;
     border-left: none;
-    border-top: 1px solid var(--border);
-    border-radius: 20px 20px 0 0;
-    transform: translateY(100%);
+    border-radius: 0;
+    /* Reset desktop slide-in */
+    transform: none;
+    opacity: 0;
+    transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s;
   }
   .panel.open {
-    transform: translateY(0);
+    flex: 1;
+    /* Large enough to take remaining space after video; transition animates from 0 */
+    max-height: 100vh;
+    transform: none;
+    opacity: 1;
+    border-top: 1px solid var(--border);
   }
 }
