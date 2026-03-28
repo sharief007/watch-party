@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/mohbaig/AppData/Local/Temp/claude/c--Users-mohbaig-learning-watch-party/e58a2fa1-5db8-4805-b7f8-62b9b85447e0/tasks/**)",
+      "Bash(npm create:*)",
+      "Bash(npx vite:*)"
+    ]
+  }
+}
