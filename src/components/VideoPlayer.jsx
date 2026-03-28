@@ -91,7 +91,7 @@ export default function VideoPlayer({ swapped }) {
   useEffect(() => {
     if (!isStreamer && remoteStream && videoRef.current && !swapped) {
       const vid = videoRef.current;
-      vid.src = '';
+      vid.removeAttribute('src');
       vid.srcObject = remoteStream;
       vid.muted = true; // muted autoplay is allowed everywhere
       vid.play()
@@ -145,9 +145,14 @@ export default function VideoPlayer({ swapped }) {
           vid.pause();
           break;
         case 'seek':
+          vid.currentTime = msg.currentTime;
           showSyncing();
           break;
         case 'sync-heartbeat': {
+          const drift = Math.abs(vid.currentTime - msg.currentTime);
+          if (drift > CONFIG.sync.seekToleranceMs / 1000) {
+            vid.currentTime = msg.currentTime;
+          }
           if (msg.paused && !vid.paused) vid.pause();
           else if (!msg.paused && vid.paused) vid.play().catch(() => {});
           break;

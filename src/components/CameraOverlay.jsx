@@ -28,12 +28,14 @@ export default function CameraOverlay({ swapped, onSwap }) {
   useEffect(() => {
     if (remoteRef.current && pipStream) {
       remoteRef.current.srcObject = pipStream;
+      remoteRef.current.play().catch(() => {});
     }
   }, [pipStream]);
 
   useEffect(() => {
     if (localRef.current && localCameraStream) {
       localRef.current.srcObject = localCameraStream;
+      localRef.current.play().catch(() => {});
     }
   }, [localCameraStream]);
 

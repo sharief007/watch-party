@@ -24,6 +24,9 @@ export function RoomProvider({ children }) {
   const heartbeatRef = useRef(null);
   const syncCallbackRef = useRef(null);
   const cleanupRef = useRef({ objectUrls: [], videoElements: [], streams: [] });
+  const videoCallRef = useRef(null);
+  const cameraCallRef = useRef(null);
+  const cameraStartingRef = useRef(false);
 
   const sendData = useCallback((data) => {
     const conn = connRef.current;
@@ -37,6 +40,13 @@ export function RoomProvider({ children }) {
     conn.on('open', () => {
       setStatus('connected');
       setError(null);
+      // If we already have a camera stream (started before peer connected), send it now
+      if (localStreamRef.current && peerRef.current && conn.peer) {
+        if (cameraCallRef.current) {
+          try { cameraCallRef.current.close(); } catch {}
+        }
+        cameraCallRef.current = peerRef.current.call(conn.peer, localStreamRef.current, { metadata: { type: 'camera' } });
+      }
     });
     conn.on('data', (data) => {
       if (data.type === 'chat') {
@@ -134,12 +144,18 @@ export function RoomProvider({ children }) {
   const sendVideoStream = useCallback((stream) => {
     const conn = connRef.current;
     if (!conn || !peerRef.current) return;
-    peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
+    if (videoCallRef.current) {
+      try { videoCallRef.current.close(); } catch {}
+      videoCallRef.current = null;
+    }
+    videoCallRef.current = peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
   }, []);
 
   // Each side independently calls the other with their camera stream.
   // No need to answer with a local stream — just send a one-way call.
   const startCamera = useCallback(async () => {
+    if (cameraStartingRef.current || localStreamRef.current) return localStreamRef.current;
+    cameraStartingRef.current = true;
     try {
       let stream;
       try {
@@ -161,11 +177,16 @@ export function RoomProvider({ children }) {
       // Call the peer with our camera — they'll receive it via handleIncomingCall
       const conn = connRef.current;
       if (conn && peerRef.current) {
-        peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
+        if (cameraCallRef.current) {
+          try { cameraCallRef.current.close(); } catch {}
+        }
+        cameraCallRef.current = peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
       }
       return stream;
     } catch {
       return null;
+    } finally {
+      cameraStartingRef.current = false;
     }
   }, []);
 
@@ -231,6 +252,15 @@ export function RoomProvider({ children }) {
   const fullCleanup = useCallback(() => {
     stopHeartbeat();
 
+    if (videoCallRef.current) {
+      try { videoCallRef.current.close(); } catch {}
+      videoCallRef.current = null;
+    }
+    if (cameraCallRef.current) {
+      try { cameraCallRef.current.close(); } catch {}
+      cameraCallRef.current = null;
+    }
+
     cleanupRef.current.streams.forEach(s => {
       try { s.getTracks().forEach(t => t.stop()); } catch {}
     });
@@ -268,6 +298,7 @@ export function RoomProvider({ children }) {
     setChatMessages([]);
     setUnreadCount(0);
     setError(null);
+    cameraStartingRef.current = false;
   }, [fullCleanup]);
 
   useEffect(() => {
