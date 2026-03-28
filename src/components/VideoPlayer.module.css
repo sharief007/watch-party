@@ -240,6 +240,16 @@
   right: 6px;
 }
 
+.viewerLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-400);
+  font-weight: 500;
+  padding: 0 8px;
+}
+
 .time {
   font-size: 0.8rem;
   color: var(--text-300);

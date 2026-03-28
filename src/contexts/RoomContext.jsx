@@ -5,8 +5,8 @@ import CONFIG from '../config';
 const RoomContext = createContext(null);
 
 export function RoomProvider({ children }) {
-  const [status, setStatus] = useState('idle'); // idle | connecting | connected | error
-  const [role, setRole] = useState(null); // streamer | viewer
+  const [status, setStatus] = useState('idle');
+  const [role, setRole] = useState(null);
   const [roomName, setRoomName] = useState('');
   const [error, setError] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -16,7 +16,6 @@ export function RoomProvider({ children }) {
   const [micEnabled, setMicEnabled] = useState(true);
   const [chatMessages, setChatMessages] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [syncState, setSyncState] = useState({ currentTime: 0, duration: 0, paused: true });
   const [isSyncing, setIsSyncing] = useState(false);
 
   const peerRef = useRef(null);
@@ -24,6 +23,8 @@ export function RoomProvider({ children }) {
   const localStreamRef = useRef(null);
   const heartbeatRef = useRef(null);
   const syncCallbackRef = useRef(null);
+  // Track all object URLs and detached elements for cleanup
+  const cleanupRef = useRef({ objectUrls: [], videoElements: [], streams: [] });
 
   const sendData = useCallback((data) => {
     const conn = connRef.current;
@@ -133,17 +134,28 @@ export function RoomProvider({ children }) {
   const sendVideoStream = useCallback((stream) => {
     const conn = connRef.current;
     if (!conn || !peerRef.current) return;
-    const remotePeerId = conn.peer;
-    peerRef.current.call(remotePeerId, stream, { metadata: { type: 'video' } });
+    peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
   }, []);
 
   const startCamera = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: CONFIG.media.camera,
-        audio: CONFIG.media.audio,
-      });
+      // Try with ideal constraints first, fall back to basic
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: CONFIG.media.camera,
+          audio: CONFIG.media.audio,
+        });
+      } catch {
+        // Fallback: minimal constraints (helps on mobile)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+      }
+
       localStreamRef.current = stream;
+      cleanupRef.current.streams.push(stream);
       setLocalCameraStream(stream);
 
       const conn = connRef.current;
@@ -193,7 +205,10 @@ export function RoomProvider({ children }) {
   }, [sendData]);
 
   const stopHeartbeat = useCallback(() => {
-    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
   }, []);
 
   const onSyncEvent = useCallback((callback) => {
@@ -205,17 +220,57 @@ export function RoomProvider({ children }) {
     setTimeout(() => setIsSyncing(false), 1500);
   }, []);
 
-  const leaveRoom = useCallback(() => {
+  // Track resources for cleanup
+  const trackObjectUrl = useCallback((url) => {
+    cleanupRef.current.objectUrls.push(url);
+  }, []);
+
+  const trackVideoElement = useCallback((el) => {
+    cleanupRef.current.videoElements.push(el);
+  }, []);
+
+  // Full cleanup: stops everything, revokes URLs, pauses detached elements
+  const fullCleanup = useCallback(() => {
     stopHeartbeat();
+
+    // Stop all tracked streams
+    cleanupRef.current.streams.forEach(s => {
+      try { s.getTracks().forEach(t => t.stop()); } catch {}
+    });
+
+    // Pause and destroy all detached video elements
+    cleanupRef.current.videoElements.forEach(el => {
+      try {
+        el.pause();
+        el.removeAttribute('src');
+        el.srcObject = null;
+        el.load(); // forces release
+      } catch {}
+    });
+
+    // Revoke all object URLs
+    cleanupRef.current.objectUrls.forEach(url => {
+      try { URL.revokeObjectURL(url); } catch {}
+    });
+
+    cleanupRef.current = { objectUrls: [], videoElements: [], streams: [] };
+
+    // Stop local camera/mic
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
+
+    // Destroy peer
     if (peerRef.current) {
       peerRef.current.destroy();
       peerRef.current = null;
     }
     connRef.current = null;
+  }, [stopHeartbeat]);
+
+  const leaveRoom = useCallback(() => {
+    fullCleanup();
     setStatus('idle');
     setRole(null);
     setRemoteStream(null);
@@ -224,25 +279,28 @@ export function RoomProvider({ children }) {
     setChatMessages([]);
     setUnreadCount(0);
     setError(null);
-  }, [stopHeartbeat]);
+  }, [fullCleanup]);
 
+  // Cleanup on unmount AND on page close/refresh
   useEffect(() => {
+    const onBeforeUnload = () => fullCleanup();
+    window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
-      stopHeartbeat();
-      if (localStreamRef.current) localStreamRef.current.getTracks().forEach(t => t.stop());
-      if (peerRef.current) peerRef.current.destroy();
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      fullCleanup();
     };
-  }, [stopHeartbeat]);
+  }, [fullCleanup]);
 
   const value = {
     status, role, roomName, error,
     remoteStream, remoteCameraStream, localCameraStream,
     cameraEnabled, micEnabled,
     chatMessages, unreadCount, setUnreadCount,
-    syncState, setSyncState, isSyncing, showSyncing,
+    isSyncing, showSyncing,
     createRoom, joinRoom, leaveRoom,
     sendVideoStream, startCamera, toggleCamera, toggleMic,
     sendChat, sendSyncEvent, startHeartbeat, stopHeartbeat, onSyncEvent, sendData,
+    trackObjectUrl, trackVideoElement,
     peerRef, connRef,
   };
 
