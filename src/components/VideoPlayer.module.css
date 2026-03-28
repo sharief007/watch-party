@@ -73,6 +73,42 @@
 }
 .pickBtn:active { transform: scale(0.97); }
 
+.pickBtnAlt {
+  background: var(--bg-600);
+  box-shadow: none;
+  border: 1px solid var(--border-light);
+}
+.pickBtnAlt:hover {
+  background: var(--bg-500);
+  box-shadow: none;
+  border-color: var(--accent);
+}
+
+.endedButtons {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.changeBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-300);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.changeBtn:hover {
+  background: rgba(108, 92, 231, 0.2);
+  color: var(--accent-light);
+  border-color: var(--accent);
+}
+
 .waiting {
   display: flex;
   flex-direction: column;

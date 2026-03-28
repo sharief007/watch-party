@@ -15,7 +15,8 @@ export default function VideoPlayer({ swapped }) {
   const captureStreamRef = useRef(null);
   const fileInputRef = useRef(null);
   const [hasFile, setHasFile] = useState(false);
-  const [needsUserPlay, setNeedsUserPlay] = useState(false); // viewer must tap to unmute
+  const [videoEnded, setVideoEnded] = useState(false);
+  const [needsUserPlay, setNeedsUserPlay] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [paused, setPaused] = useState(true);
@@ -26,10 +27,16 @@ export default function VideoPlayer({ swapped }) {
   const containerRef = useRef(null);
   const isStreamer = role === 'streamer';
 
-  // ─── Streamer: file selection ───
+  // ─── Streamer: file selection (works for initial + re-select) ───
   const handleFileSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Reset state for new video
+    stopHeartbeat();
+    setVideoEnded(false);
+    setCurrentTime(0);
+    setPaused(true);
 
     const url = URL.createObjectURL(file);
     trackObjectUrl(url);
@@ -59,6 +66,13 @@ export default function VideoPlayer({ swapped }) {
         startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
       }
     };
+
+    // Reset file input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
   };
 
   // Send stream when peer connects (if file already loaded)
@@ -142,7 +156,7 @@ export default function VideoPlayer({ swapped }) {
     });
   }, [isStreamer, onSyncEvent, showSyncing]);
 
-  // ─── Time tracking ───
+  // ─── Time tracking + ended detection ───
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -152,19 +166,28 @@ export default function VideoPlayer({ swapped }) {
       setCurrentTime(vid.currentTime || 0);
       setPaused(vid.paused);
     };
+    const onEnded = () => {
+      if (isStreamer) {
+        setVideoEnded(true);
+        setPaused(true);
+        sendSyncEvent('pause', vid.currentTime);
+      }
+    };
 
     const interval = setInterval(update, 250);
     vid.addEventListener('loadedmetadata', update);
     vid.addEventListener('play', update);
     vid.addEventListener('pause', update);
+    vid.addEventListener('ended', onEnded);
 
     return () => {
       clearInterval(interval);
       vid.removeEventListener('loadedmetadata', update);
       vid.removeEventListener('play', update);
       vid.removeEventListener('pause', update);
+      vid.removeEventListener('ended', onEnded);
     };
-  }, [hasFile, remoteStream]);
+  }, [hasFile, remoteStream, isStreamer, sendSyncEvent]);
 
   // ─── Streamer-only controls ───
   const togglePlay = () => {
@@ -277,7 +300,16 @@ export default function VideoPlayer({ swapped }) {
           </div>
         )}
 
-        {/* Streamer: file picker overlay */}
+        {/* Hidden file input (always in DOM for re-selection) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/*"
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
+        />
+
+        {/* Streamer: initial file picker overlay */}
         {!hasFile && isStreamer && !swapped && (
           <div className={styles.overlay}>
             <div className={styles.pickFile}>
@@ -288,16 +320,32 @@ export default function VideoPlayer({ swapped }) {
               </svg>
               <h3>Select a video file</h3>
               <p>Choose a video from your device to start streaming</p>
-              <button className={styles.pickBtn} onClick={() => fileInputRef.current?.click()}>
+              <button className={styles.pickBtn} onClick={openFilePicker}>
                 Choose File
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="video/*"
-                onChange={handleFileSelect}
-                style={{ display: 'none' }}
-              />
+            </div>
+          </div>
+        )}
+
+        {/* Streamer: video ended overlay */}
+        {videoEnded && isStreamer && (
+          <div className={styles.overlay}>
+            <div className={styles.pickFile}>
+              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="16 12 12 8 8 12" />
+                <line x1="12" y1="16" x2="12" y2="8" />
+              </svg>
+              <h3>Video ended</h3>
+              <p>Select another video or replay</p>
+              <div className={styles.endedButtons}>
+                <button className={styles.pickBtn} onClick={() => { setVideoEnded(false); seek(0); }}>
+                  Replay
+                </button>
+                <button className={`${styles.pickBtn} ${styles.pickBtnAlt}`} onClick={openFilePicker}>
+                  New Video
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -390,6 +438,14 @@ export default function VideoPlayer({ swapped }) {
           </div>
 
           <div className={styles.controlsRight}>
+            {isStreamer && hasFile && (
+              <button className={styles.changeBtn} onClick={openFilePicker} title="Change video">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                  <polyline points="14,2 14,8 20,8" />
+                </svg>
+              </button>
+            )}
             <div className={styles.volumeGroup}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polygon points="11,5 6,9 2,9 2,15 6,15 11,19" fill="currentColor" />

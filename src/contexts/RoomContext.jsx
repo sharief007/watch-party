@@ -23,7 +23,6 @@ export function RoomProvider({ children }) {
   const localStreamRef = useRef(null);
   const heartbeatRef = useRef(null);
   const syncCallbackRef = useRef(null);
-  // Track all object URLs and detached elements for cleanup
   const cleanupRef = useRef({ objectUrls: [], videoElements: [], streams: [] });
 
   const sendData = useCallback((data) => {
@@ -59,8 +58,9 @@ export function RoomProvider({ children }) {
       call.answer();
       call.on('stream', (stream) => setRemoteStream(stream));
     } else if (type === 'camera') {
-      const localCam = localStreamRef.current;
-      call.answer(localCam || undefined);
+      // Answer camera call — don't try to send our own camera here.
+      // Each side independently calls the other when their camera starts.
+      call.answer();
       call.on('stream', (stream) => setRemoteCameraStream(stream));
     }
   }, []);
@@ -137,9 +137,10 @@ export function RoomProvider({ children }) {
     peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
   }, []);
 
+  // Each side independently calls the other with their camera stream.
+  // No need to answer with a local stream — just send a one-way call.
   const startCamera = useCallback(async () => {
     try {
-      // Try with ideal constraints first, fall back to basic
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -147,7 +148,6 @@ export function RoomProvider({ children }) {
           audio: CONFIG.media.audio,
         });
       } catch {
-        // Fallback: minimal constraints (helps on mobile)
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
@@ -158,10 +158,10 @@ export function RoomProvider({ children }) {
       cleanupRef.current.streams.push(stream);
       setLocalCameraStream(stream);
 
+      // Call the peer with our camera — they'll receive it via handleIncomingCall
       const conn = connRef.current;
       if (conn && peerRef.current) {
-        const call = peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
-        call.on('stream', (s) => setRemoteCameraStream(s));
+        peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
       }
       return stream;
     } catch {
@@ -220,7 +220,6 @@ export function RoomProvider({ children }) {
     setTimeout(() => setIsSyncing(false), 1500);
   }, []);
 
-  // Track resources for cleanup
   const trackObjectUrl = useCallback((url) => {
     cleanupRef.current.objectUrls.push(url);
   }, []);
@@ -229,39 +228,29 @@ export function RoomProvider({ children }) {
     cleanupRef.current.videoElements.push(el);
   }, []);
 
-  // Full cleanup: stops everything, revokes URLs, pauses detached elements
   const fullCleanup = useCallback(() => {
     stopHeartbeat();
 
-    // Stop all tracked streams
     cleanupRef.current.streams.forEach(s => {
       try { s.getTracks().forEach(t => t.stop()); } catch {}
     });
-
-    // Pause and destroy all detached video elements
     cleanupRef.current.videoElements.forEach(el => {
       try {
         el.pause();
         el.removeAttribute('src');
         el.srcObject = null;
-        el.load(); // forces release
+        el.load();
       } catch {}
     });
-
-    // Revoke all object URLs
     cleanupRef.current.objectUrls.forEach(url => {
       try { URL.revokeObjectURL(url); } catch {}
     });
-
     cleanupRef.current = { objectUrls: [], videoElements: [], streams: [] };
 
-    // Stop local camera/mic
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
-
-    // Destroy peer
     if (peerRef.current) {
       peerRef.current.destroy();
       peerRef.current = null;
@@ -281,7 +270,6 @@ export function RoomProvider({ children }) {
     setError(null);
   }, [fullCleanup]);
 
-  // Cleanup on unmount AND on page close/refresh
   useEffect(() => {
     const onBeforeUnload = () => fullCleanup();
     window.addEventListener('beforeunload', onBeforeUnload);
