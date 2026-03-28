@@ -21,10 +21,10 @@ export default function TopBar({ chatOpen, onToggleChat }) {
     }
   };
 
-  const handleMicClick = () => {
+  const handleMicClick = async () => {
     if (!localCameraStream) {
       // Mic requires camera to be started first (they share the same getUserMedia call)
-      startCamera();
+      await startCamera();
     } else {
       toggleMic();
     }

@@ -51,7 +51,7 @@ export default function ChatPanel({ open, onClose }) {
           </div>
         )}
         {chatMessages.map((msg, i) => (
-          <div key={i} className={`${styles.msg} ${msg.isMine ? styles.mine : styles.theirs}`}>
+          <div key={`${msg.timestamp}-${i}`} className={`${styles.msg} ${msg.isMine ? styles.mine : styles.theirs}`}>
             <div className={styles.bubble}>
               {msg.text}
             </div>

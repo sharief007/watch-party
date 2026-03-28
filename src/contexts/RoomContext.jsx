@@ -26,6 +26,7 @@ export function RoomProvider({ children }) {
   const cleanupRef = useRef({ objectUrls: [], videoElements: [], streams: [] });
   const videoCallRef = useRef(null);
   const cameraCallRef = useRef(null);
+  const incomingCallsRef = useRef([]);
   const cameraStartingRef = useRef(false);
 
   const sendData = useCallback((data) => {
@@ -58,11 +59,36 @@ export function RoomProvider({ children }) {
         }
       }
     });
-    conn.on('close', () => setStatus('idle'));
+    conn.on('close', () => {
+      // Close outgoing media calls
+      if (videoCallRef.current) {
+        try { videoCallRef.current.close(); } catch {}
+        videoCallRef.current = null;
+      }
+      if (cameraCallRef.current) {
+        try { cameraCallRef.current.close(); } catch {}
+        cameraCallRef.current = null;
+      }
+      // Close all incoming media calls
+      incomingCallsRef.current.forEach(call => { try { call.close(); } catch {} });
+      incomingCallsRef.current = [];
+      // Destroy the signaling peer so it doesn't leak
+      if (peerRef.current) {
+        peerRef.current.destroy();
+        peerRef.current = null;
+      }
+      connRef.current = null;
+      // Clear remote streams so stale frames don't remain on screen
+      setRemoteStream(null);
+      setRemoteCameraStream(null);
+      setStatus('idle');
+    });
     conn.on('error', (err) => setError(err.message));
   }, []);
 
   const handleIncomingCall = useCallback((call) => {
+    // Track every incoming call so we can close it on cleanup
+    incomingCallsRef.current.push(call);
     const type = call.metadata?.type || 'video';
     if (type === 'video') {
       call.answer();
@@ -130,7 +156,12 @@ export function RoomProvider({ children }) {
 
       peer.on('call', (call) => handleIncomingCall(call));
       peer.on('error', (err) => {
-        if (err.type !== 'peer-unavailable') setError(err.message);
+        if (err.type === 'peer-unavailable') {
+          setStatus('error');
+          setError('Room not found. Check the room name and try again.');
+        } else {
+          setError(err.message || 'Connection error');
+        }
       });
 
       const conn = peer.connect(roomId, { reliable: true });
@@ -246,7 +277,9 @@ export function RoomProvider({ children }) {
   }, []);
 
   const trackVideoElement = useCallback((el) => {
-    cleanupRef.current.videoElements.push(el);
+    if (!cleanupRef.current.videoElements.includes(el)) {
+      cleanupRef.current.videoElements.push(el);
+    }
   }, []);
 
   const fullCleanup = useCallback(() => {
@@ -260,6 +293,9 @@ export function RoomProvider({ children }) {
       try { cameraCallRef.current.close(); } catch {}
       cameraCallRef.current = null;
     }
+
+    incomingCallsRef.current.forEach(call => { try { call.close(); } catch {} });
+    incomingCallsRef.current = [];
 
     cleanupRef.current.streams.forEach(s => {
       try { s.getTracks().forEach(t => t.stop()); } catch {}
