@@ -28,6 +28,7 @@ export function RoomProvider({ children }) {
   const cameraCallRef = useRef(null);
   const incomingCallsRef = useRef([]);
   const cameraStartingRef = useRef(false);
+  const connTimeoutRef = useRef(null);
 
   const sendData = useCallback((data) => {
     const conn = connRef.current;
@@ -38,7 +39,20 @@ export function RoomProvider({ children }) {
 
   const setupDataConnection = useCallback((conn) => {
     connRef.current = conn;
+
+    // If WebRTC ICE fails (common across different networks / mobile carriers)
+    // the DataConnection will never fire 'open'. Give it 20 s then surface an error.
+    connTimeoutRef.current = setTimeout(() => {
+      if (connRef.current && !connRef.current.open) {
+        setStatus('error');
+        setError('Could not establish a connection. Check the room name, ensure both devices are online, and try again.');
+        if (peerRef.current) { peerRef.current.destroy(); peerRef.current = null; }
+        connRef.current = null;
+      }
+    }, 20000);
+
     conn.on('open', () => {
+      clearTimeout(connTimeoutRef.current);
       setStatus('connected');
       setError(null);
       // If we already have a camera stream (started before peer connected), send it now
@@ -113,7 +127,10 @@ export function RoomProvider({ children }) {
         host: CONFIG.peerjs.host,
         port: CONFIG.peerjs.port,
         secure: CONFIG.peerjs.secure,
-        config: { iceServers: CONFIG.ice.servers },
+        config: {
+          iceServers: CONFIG.ice.servers,
+          iceCandidatePoolSize: CONFIG.ice.iceCandidatePoolSize,
+        },
       });
       peerRef.current = peer;
 
@@ -145,7 +162,10 @@ export function RoomProvider({ children }) {
         host: CONFIG.peerjs.host,
         port: CONFIG.peerjs.port,
         secure: CONFIG.peerjs.secure,
-        config: { iceServers: CONFIG.ice.servers },
+        config: {
+          iceServers: CONFIG.ice.servers,
+          iceCandidatePoolSize: CONFIG.ice.iceCandidatePoolSize,
+        },
       });
       peerRef.current = peer;
 
@@ -284,6 +304,7 @@ export function RoomProvider({ children }) {
 
   const fullCleanup = useCallback(() => {
     stopHeartbeat();
+    clearTimeout(connTimeoutRef.current);
 
     if (videoCallRef.current) {
       try { videoCallRef.current.close(); } catch {}
