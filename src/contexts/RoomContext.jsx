@@ -4,6 +4,9 @@ import CONFIG from '../config';
 
 const RoomContext = createContext(null);
 
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const ICE_RESTART_GRACE_MS = 3000;
+
 export function RoomProvider({ children }) {
   const [status, setStatus] = useState('idle');
   const [role, setRole] = useState(null);
@@ -24,11 +27,22 @@ export function RoomProvider({ children }) {
   const heartbeatRef = useRef(null);
   const syncCallbackRef = useRef(null);
   const cleanupRef = useRef({ objectUrls: [], videoElements: [], streams: [] });
-  const videoCallRef = useRef(null);
-  const cameraCallRef = useRef(null);
-  const incomingCallsRef = useRef([]);
+
+  // Single Map of all media calls, keyed by `${direction}:${type}:${peerId}`.
+  // Direction ∈ out|in; type ∈ video|camera. Replaces videoCallRef/cameraCallRef/
+  // incomingCallsRef so stale calls are replaced deterministically.
+  const callsRef = useRef(new Map());
   const cameraStartingRef = useRef(false);
   const connTimeoutRef = useRef(null);
+
+  // Reconnect / role refs (read from non-React code paths)
+  const roleRef = useRef(null);
+  const roomIdRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+  const isLeavingRef = useRef(false);
+  // Remember the streamer's file capture stream so we can re-send on reconnect.
+  const lastVideoStreamRef = useRef(null);
 
   const sendData = useCallback((data) => {
     const conn = connRef.current;
@@ -37,13 +51,92 @@ export function RoomProvider({ children }) {
     }
   }, []);
 
+  // ─── Call management ────────────────────────────────────────────────
+  const closeCall = useCallback((key) => {
+    const c = callsRef.current.get(key);
+    if (c) {
+      try { c.close(); } catch {}
+      callsRef.current.delete(key);
+    }
+  }, []);
+
+  const closeAllCalls = useCallback(() => {
+    for (const [, c] of callsRef.current) { try { c.close(); } catch {} }
+    callsRef.current.clear();
+  }, []);
+
+  // Forward declarations for ICE-failure re-issue handlers (defined later).
+  const resendVideoIfNeededRef = useRef(null);
+  const resendCameraIfNeededRef = useRef(null);
+
+  // Attach ICE state listeners to a MediaConnection. On failure, try restartIce;
+  // if still bad after a grace window, invoke the on-fail callback to re-issue
+  // the call. PeerJS exposes the underlying RTCPeerConnection as `peerConnection`,
+  // but it may be null for a brief window after construction — so we poll.
+  const attachIceListeners = useCallback((call, onFailed) => {
+    let attached = false;
+    const tryAttach = (retries = 20) => {
+      if (attached) return;
+      const pc = call.peerConnection;
+      if (!pc) {
+        if (retries > 0) setTimeout(() => tryAttach(retries - 1), 200);
+        return;
+      }
+      attached = true;
+      pc.addEventListener('iceconnectionstatechange', () => {
+        const s = pc.iceConnectionState;
+        if (s === 'failed') {
+          try { pc.restartIce?.(); } catch {}
+          setTimeout(() => {
+            const cur = pc.iceConnectionState;
+            if (cur === 'failed' || cur === 'disconnected' || cur === 'closed') {
+              try { onFailed(); } catch {}
+            }
+          }, ICE_RESTART_GRACE_MS);
+        }
+      });
+    };
+    tryAttach();
+  }, []);
+
+  // ─── Reconnect loop ─────────────────────────────────────────────────
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const tryReconnectRef = useRef(null);
+
+  const scheduleReconnect = useCallback(() => {
+    if (isLeavingRef.current) return;
+    clearReconnectTimer();
+    const attempt = reconnectAttemptsRef.current;
+    const base = Math.min(RECONNECT_MAX_DELAY_MS, 1000 * Math.pow(2, attempt));
+    // Full-jitter: random delay in [500ms, base]
+    const delay = Math.max(500, Math.random() * base);
+    reconnectAttemptsRef.current = attempt + 1;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      tryReconnectRef.current?.();
+    }, delay);
+  }, [clearReconnectTimer]);
+
+  // ─── Data connection setup ──────────────────────────────────────────
   const setupDataConnection = useCallback((conn) => {
     connRef.current = conn;
 
-    // If WebRTC ICE fails (common across different networks / mobile carriers)
-    // the DataConnection will never fire 'open'. Give it 20 s then surface an error.
+    if (connTimeoutRef.current) clearTimeout(connTimeoutRef.current);
     connTimeoutRef.current = setTimeout(() => {
-      if (connRef.current && !connRef.current.open) {
+      if (connRef.current === conn && !conn.open) {
+        // During reconnect mode, just try again rather than hard-failing.
+        if (reconnectAttemptsRef.current > 0) {
+          try { conn.close(); } catch {}
+          connRef.current = null;
+          scheduleReconnect();
+          return;
+        }
         setStatus('error');
         setError('Could not establish a connection. Check the room name, ensure both devices are online, and try again.');
         if (peerRef.current) { peerRef.current.destroy(); peerRef.current = null; }
@@ -52,15 +145,32 @@ export function RoomProvider({ children }) {
     }, 20000);
 
     conn.on('open', () => {
-      clearTimeout(connTimeoutRef.current);
+      if (connTimeoutRef.current) { clearTimeout(connTimeoutRef.current); connTimeoutRef.current = null; }
+      reconnectAttemptsRef.current = 0;
+      clearReconnectTimer();
       setStatus('connected');
       setError(null);
-      // If we already have a camera stream (started before peer connected), send it now
+
+      // Streamer: re-send the file capture stream if we had one before the drop.
+      if (roleRef.current === 'streamer' && lastVideoStreamRef.current && peerRef.current && conn.peer) {
+        const key = `out:video:${conn.peer}`;
+        closeCall(key);
+        try {
+          const call = peerRef.current.call(conn.peer, lastVideoStreamRef.current, { metadata: { type: 'video' } });
+          callsRef.current.set(key, call);
+          attachIceListeners(call, () => { closeCall(key); resendVideoIfNeededRef.current?.(); });
+        } catch {}
+      }
+
+      // Both sides: re-send camera if we have one locally.
       if (localStreamRef.current && peerRef.current && conn.peer) {
-        if (cameraCallRef.current) {
-          try { cameraCallRef.current.close(); } catch {}
-        }
-        cameraCallRef.current = peerRef.current.call(conn.peer, localStreamRef.current, { metadata: { type: 'camera' } });
+        const key = `out:camera:${conn.peer}`;
+        closeCall(key);
+        try {
+          const call = peerRef.current.call(conn.peer, localStreamRef.current, { metadata: { type: 'camera' } });
+          callsRef.current.set(key, call);
+          attachIceListeners(call, () => { closeCall(key); resendCameraIfNeededRef.current?.(); });
+        } catch {}
       }
     });
     conn.on('data', (data) => {
@@ -74,136 +184,215 @@ export function RoomProvider({ children }) {
       }
     });
     conn.on('close', () => {
-      // Close outgoing media calls
-      if (videoCallRef.current) {
-        try { videoCallRef.current.close(); } catch {}
-        videoCallRef.current = null;
-      }
-      if (cameraCallRef.current) {
-        try { cameraCallRef.current.close(); } catch {}
-        cameraCallRef.current = null;
-      }
-      // Close all incoming media calls
-      incomingCallsRef.current.forEach(call => { try { call.close(); } catch {} });
-      incomingCallsRef.current = [];
-      // Destroy the signaling peer so it doesn't leak
-      if (peerRef.current) {
-        peerRef.current.destroy();
-        peerRef.current = null;
-      }
+      // Close all media calls — they'll be re-issued on reconnect. Do NOT
+      // destroy the peer, stop local streams, or touch the local camera.
+      closeAllCalls();
       connRef.current = null;
-      // Clear remote streams so stale frames don't remain on screen
       setRemoteStream(null);
       setRemoteCameraStream(null);
-      setStatus('idle');
-    });
-    conn.on('error', (err) => setError(err.message));
-  }, []);
 
+      if (isLeavingRef.current) return;
+      setStatus('reconnecting');
+      scheduleReconnect();
+    });
+    conn.on('error', (err) => {
+      setError(err?.message || String(err));
+      // Let close handler drive the retry.
+    });
+  }, [attachIceListeners, closeAllCalls, closeCall, clearReconnectTimer, scheduleReconnect]);
+
+  // ─── Incoming call handler ──────────────────────────────────────────
   const handleIncomingCall = useCallback((call) => {
-    // Track every incoming call so we can close it on cleanup
-    incomingCallsRef.current.push(call);
     const type = call.metadata?.type || 'video';
+    const key = `in:${type}:${call.peer}`;
+    closeCall(key); // drop any prior incoming call of the same type+peer
+    callsRef.current.set(key, call);
+    call.on('close', () => { if (callsRef.current.get(key) === call) callsRef.current.delete(key); });
+    call.on('error', () => { if (callsRef.current.get(key) === call) callsRef.current.delete(key); });
+
     if (type === 'video') {
       call.answer();
       call.on('stream', (stream) => setRemoteStream(stream));
     } else if (type === 'camera') {
-      // Answer camera call — don't try to send our own camera here.
-      // Each side independently calls the other when their camera starts.
       call.answer();
       call.on('stream', (stream) => setRemoteCameraStream(stream));
     }
+    attachIceListeners(call, () => closeCall(key));
+  }, [attachIceListeners, closeCall]);
+
+  // Register long-lived peer event handlers. Called once per Peer instance,
+  // both on initial create/join and on each reconnect that recreates the peer.
+  const bindPeerEvents = useCallback((peer) => {
+    peer.on('call', (call) => handleIncomingCall(call));
+    peer.on('connection', (conn) => setupDataConnection(conn));
+    peer.on('error', (err) => {
+      const t = err?.type;
+      if (t === 'peer-unavailable') {
+        // Initial join miss → hard error. Reconnect loop → keep trying.
+        if (reconnectAttemptsRef.current > 0 && !isLeavingRef.current) {
+          scheduleReconnect();
+          return;
+        }
+        setStatus('error');
+        setError('Room not found. Check the room name and try again.');
+      } else if (t === 'network' || t === 'disconnected' || t === 'server-error' || t === 'socket-error') {
+        if (!isLeavingRef.current) {
+          setStatus('reconnecting');
+          scheduleReconnect();
+        }
+      } else if (t !== 'unavailable-id') {
+        setError(err?.message || String(err));
+      }
+    });
+    peer.on('disconnected', () => {
+      if (isLeavingRef.current) return;
+      // Signaling-server WebSocket dropped; peer object is still alive.
+      try { peer.reconnect(); } catch {}
+    });
+  }, [handleIncomingCall, scheduleReconnect, setupDataConnection]);
+
+  // Init a new Peer and await 'open'. Uses once() + off() so the error listener
+  // from the init Promise does not linger.
+  const initPeer = useCallback(async (peerId) => {
+    const peer = new Peer(peerId, {
+      host: CONFIG.peerjs.host,
+      port: CONFIG.peerjs.port,
+      secure: CONFIG.peerjs.secure,
+      config: {
+        iceServers: CONFIG.ice.servers,
+        iceCandidatePoolSize: CONFIG.ice.iceCandidatePoolSize,
+      },
+    });
+    await new Promise((resolve, reject) => {
+      const onOpen = () => { peer.off('error', onError); resolve(); };
+      const onError = (err) => { peer.off('open', onOpen); reject(err); };
+      peer.once('open', onOpen);
+      peer.once('error', onError);
+    });
+    return peer;
   }, []);
 
+  // ─── Create room (streamer) ─────────────────────────────────────────
   const createRoom = useCallback(async (name) => {
     const roomId = `${CONFIG.peerjs.roomPrefix}-${name.toLowerCase().trim()}`;
+    roomIdRef.current = roomId;
     setRoomName(name);
     setRole('streamer');
+    roleRef.current = 'streamer';
     setStatus('connecting');
     setError(null);
+    isLeavingRef.current = false;
+    reconnectAttemptsRef.current = 0;
 
     try {
-      const peer = new Peer(roomId, {
-        host: CONFIG.peerjs.host,
-        port: CONFIG.peerjs.port,
-        secure: CONFIG.peerjs.secure,
-        config: {
-          iceServers: CONFIG.ice.servers,
-          iceCandidatePoolSize: CONFIG.ice.iceCandidatePoolSize,
-        },
-      });
+      const peer = await initPeer(roomId);
       peerRef.current = peer;
-
-      await new Promise((resolve, reject) => {
-        peer.on('open', resolve);
-        peer.on('error', reject);
-      });
-
-      peer.on('connection', (conn) => setupDataConnection(conn));
-      peer.on('call', (call) => handleIncomingCall(call));
-      peer.on('error', (err) => {
-        if (err.type !== 'peer-unavailable') setError(err.message);
-      });
+      bindPeerEvents(peer);
     } catch (err) {
       setStatus('error');
-      setError(err.type === 'unavailable-id' ? 'Room already exists. Try a different name.' : (err.message || 'Connection failed'));
+      setError(err?.type === 'unavailable-id' ? 'Room already exists. Try a different name.' : (err?.message || 'Connection failed'));
     }
-  }, [setupDataConnection, handleIncomingCall]);
+  }, [bindPeerEvents, initPeer]);
 
+  // ─── Join room (viewer) ─────────────────────────────────────────────
   const joinRoom = useCallback(async (name) => {
     const roomId = `${CONFIG.peerjs.roomPrefix}-${name.toLowerCase().trim()}`;
+    roomIdRef.current = roomId;
     setRoomName(name);
     setRole('viewer');
+    roleRef.current = 'viewer';
     setStatus('connecting');
     setError(null);
+    isLeavingRef.current = false;
+    reconnectAttemptsRef.current = 0;
 
     try {
-      const peer = new Peer(undefined, {
-        host: CONFIG.peerjs.host,
-        port: CONFIG.peerjs.port,
-        secure: CONFIG.peerjs.secure,
-        config: {
-          iceServers: CONFIG.ice.servers,
-          iceCandidatePoolSize: CONFIG.ice.iceCandidatePoolSize,
-        },
-      });
+      const peer = await initPeer(undefined);
       peerRef.current = peer;
-
-      await new Promise((resolve, reject) => {
-        peer.on('open', resolve);
-        peer.on('error', reject);
-      });
-
-      peer.on('call', (call) => handleIncomingCall(call));
-      peer.on('error', (err) => {
-        if (err.type === 'peer-unavailable') {
-          setStatus('error');
-          setError('Room not found. Check the room name and try again.');
-        } else {
-          setError(err.message || 'Connection error');
-        }
-      });
-
+      bindPeerEvents(peer);
       const conn = peer.connect(roomId, { reliable: true });
       setupDataConnection(conn);
     } catch (err) {
       setStatus('error');
-      setError(err.message || 'Connection failed');
+      setError(err?.message || 'Connection failed');
     }
-  }, [setupDataConnection, handleIncomingCall]);
+  }, [bindPeerEvents, initPeer, setupDataConnection]);
 
+  // ─── Reconnect entry point ──────────────────────────────────────────
+  // Assigned via ref so scheduleReconnect (defined earlier) can invoke it.
+  tryReconnectRef.current = async () => {
+    if (isLeavingRef.current) return;
+    const roomId = roomIdRef.current;
+    const r = roleRef.current;
+    if (!roomId || !r) return;
+
+    try {
+      let peer = peerRef.current;
+      const needNewPeer = !peer || peer.destroyed;
+      if (needNewPeer) {
+        const peerId = r === 'streamer' ? roomId : undefined;
+        peer = await initPeer(peerId);
+        peerRef.current = peer;
+        bindPeerEvents(peer);
+      } else if (peer.disconnected) {
+        try { peer.reconnect(); } catch {}
+      }
+
+      if (r === 'viewer') {
+        const conn = peer.connect(roomId, { reliable: true });
+        setupDataConnection(conn);
+      }
+      // Streamer: 'connection' is already bound; wait for viewer to reconnect.
+      // The reconnect loop will stop once status becomes 'connected'.
+    } catch {
+      scheduleReconnect();
+    }
+  };
+
+  const cancelReconnect = useCallback(() => {
+    clearReconnectTimer();
+    reconnectAttemptsRef.current = 0;
+  }, [clearReconnectTimer]);
+
+  // ─── Send video stream (from file captureStream) ────────────────────
   const sendVideoStream = useCallback((stream) => {
+    lastVideoStreamRef.current = stream || null;
     const conn = connRef.current;
     if (!conn || !peerRef.current) return;
-    if (videoCallRef.current) {
-      try { videoCallRef.current.close(); } catch {}
-      videoCallRef.current = null;
-    }
-    videoCallRef.current = peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
-  }, []);
+    const key = `out:video:${conn.peer}`;
+    closeCall(key);
+    try {
+      const call = peerRef.current.call(conn.peer, stream, { metadata: { type: 'video' } });
+      callsRef.current.set(key, call);
+      attachIceListeners(call, () => { closeCall(key); resendVideoIfNeededRef.current?.(); });
+    } catch {}
+  }, [attachIceListeners, closeCall]);
 
-  // Each side independently calls the other with their camera stream.
-  // No need to answer with a local stream — just send a one-way call.
+  resendVideoIfNeededRef.current = () => {
+    const stream = lastVideoStreamRef.current;
+    const conn = connRef.current;
+    if (stream && conn && conn.open) sendVideoStream(stream);
+  };
+
+  // ─── Start local camera + send to peer ──────────────────────────────
+  const sendCameraCallRef = useRef(null);
+  sendCameraCallRef.current = (stream) => {
+    const conn = connRef.current;
+    if (!conn || !conn.open || !peerRef.current) return;
+    const key = `out:camera:${conn.peer}`;
+    closeCall(key);
+    try {
+      const call = peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
+      callsRef.current.set(key, call);
+      attachIceListeners(call, () => { closeCall(key); resendCameraIfNeededRef.current?.(); });
+    } catch {}
+  };
+
+  resendCameraIfNeededRef.current = () => {
+    const stream = localStreamRef.current;
+    if (stream) sendCameraCallRef.current?.(stream);
+  };
+
   const startCamera = useCallback(async () => {
     if (cameraStartingRef.current || localStreamRef.current) return localStreamRef.current;
     cameraStartingRef.current = true;
@@ -225,14 +414,7 @@ export function RoomProvider({ children }) {
       cleanupRef.current.streams.push(stream);
       setLocalCameraStream(stream);
 
-      // Call the peer with our camera — they'll receive it via handleIncomingCall
-      const conn = connRef.current;
-      if (conn && peerRef.current) {
-        if (cameraCallRef.current) {
-          try { cameraCallRef.current.close(); } catch {}
-        }
-        cameraCallRef.current = peerRef.current.call(conn.peer, stream, { metadata: { type: 'camera' } });
-      }
+      sendCameraCallRef.current?.(stream);
       return stream;
     } catch {
       return null;
@@ -241,12 +423,22 @@ export function RoomProvider({ children }) {
     }
   }, []);
 
+  // Flip track.enabled. When re-enabling, also re-issue the camera call if the
+  // prior one was torn down (transient drop). Audio is on the same stream, so
+  // toggleMic does not need to re-call.
   const toggleCamera = useCallback(() => {
     const stream = localStreamRef.current;
     if (!stream) return;
     const enabled = !cameraEnabled;
     stream.getVideoTracks().forEach(t => { t.enabled = enabled; });
     setCameraEnabled(enabled);
+
+    if (enabled) {
+      const conn = connRef.current;
+      if (conn && conn.open && !callsRef.current.has(`out:camera:${conn.peer}`)) {
+        sendCameraCallRef.current?.(stream);
+      }
+    }
   }, [cameraEnabled]);
 
   const toggleMic = useCallback(() => {
@@ -304,19 +496,16 @@ export function RoomProvider({ children }) {
 
   const fullCleanup = useCallback(() => {
     stopHeartbeat();
-    clearTimeout(connTimeoutRef.current);
-
-    if (videoCallRef.current) {
-      try { videoCallRef.current.close(); } catch {}
-      videoCallRef.current = null;
-    }
-    if (cameraCallRef.current) {
-      try { cameraCallRef.current.close(); } catch {}
-      cameraCallRef.current = null;
+    clearReconnectTimer();
+    isLeavingRef.current = true;
+    reconnectAttemptsRef.current = 0;
+    if (connTimeoutRef.current) {
+      clearTimeout(connTimeoutRef.current);
+      connTimeoutRef.current = null;
     }
 
-    incomingCallsRef.current.forEach(call => { try { call.close(); } catch {} });
-    incomingCallsRef.current = [];
+    closeAllCalls();
+    lastVideoStreamRef.current = null;
 
     cleanupRef.current.streams.forEach(s => {
       try { s.getTracks().forEach(t => t.stop()); } catch {}
@@ -343,7 +532,9 @@ export function RoomProvider({ children }) {
       peerRef.current = null;
     }
     connRef.current = null;
-  }, [stopHeartbeat]);
+    roomIdRef.current = null;
+    roleRef.current = null;
+  }, [clearReconnectTimer, closeAllCalls, stopHeartbeat]);
 
   const leaveRoom = useCallback(() => {
     fullCleanup();
@@ -373,7 +564,7 @@ export function RoomProvider({ children }) {
     cameraEnabled, micEnabled,
     chatMessages, unreadCount, setUnreadCount,
     isSyncing, showSyncing,
-    createRoom, joinRoom, leaveRoom,
+    createRoom, joinRoom, leaveRoom, cancelReconnect,
     sendVideoStream, startCamera, toggleCamera, toggleMic,
     sendChat, sendSyncEvent, startHeartbeat, stopHeartbeat, onSyncEvent, sendData,
     trackObjectUrl, trackVideoElement,

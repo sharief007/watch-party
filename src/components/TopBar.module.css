@@ -64,6 +64,7 @@
 }
 .dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green-glow); }
 .dot.connecting { background: var(--orange); animation: pulse 1.2s ease-in-out infinite; }
+.dot.reconnecting { background: var(--orange); animation: pulse 0.8s ease-in-out infinite; }
 .dot.idle, .dot.error { background: var(--red); }
 
 .roleBadge {

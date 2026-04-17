@@ -146,6 +146,13 @@ export default function VideoPlayer({ swapped }) {
   }, [swapped, remoteCameraStream, remoteStream, isStreamer]);
 
   // ─── Sync: viewer receives events from streamer ───
+  // Read `needsUserPlay` from a ref inside the handler so the listener doesn't
+  // need to re-register when the overlay toggles. Sync events that auto-play
+  // are gated until the viewer has tapped "Start Watching"; otherwise the
+  // heartbeat would fight the tap-to-watch overlay and cause black flashes.
+  const needsUserPlayRef = useRef(needsUserPlay);
+  useEffect(() => { needsUserPlayRef.current = needsUserPlay; }, [needsUserPlay]);
+
   useEffect(() => {
     onSyncEvent((msg) => {
       if (isStreamer) return;
@@ -153,18 +160,23 @@ export default function VideoPlayer({ swapped }) {
       const vid = videoRef.current;
       if (!vid) return;
 
+      const gated = needsUserPlayRef.current;
+
       switch (msg.type) {
         case 'play':
-          vid.play().catch(() => {});
+          if (!gated) vid.play().catch(() => {});
           break;
         case 'pause':
           vid.pause();
           break;
         case 'seek':
-          vid.currentTime = msg.currentTime;
-          showSyncing();
+          if (!gated) {
+            vid.currentTime = msg.currentTime;
+            showSyncing();
+          }
           break;
         case 'sync-heartbeat': {
+          if (gated) break;
           const drift = Math.abs(vid.currentTime - msg.currentTime);
           if (drift > CONFIG.sync.seekToleranceMs / 1000) {
             vid.currentTime = msg.currentTime;
@@ -178,6 +190,14 @@ export default function VideoPlayer({ swapped }) {
   }, [isStreamer, onSyncEvent, showSyncing]);
 
   // ─── Time tracking + ended detection ───
+  // The <video> element is stable across stream swaps, so we attach listeners
+  // once on mount. Avoiding re-binds on `remoteStream` change prevents a gap
+  // where sync events are missed whenever the streamer re-selects a file.
+  const isStreamerRef = useRef(isStreamer);
+  useEffect(() => { isStreamerRef.current = isStreamer; }, [isStreamer]);
+  const sendSyncEventRef = useRef(sendSyncEvent);
+  useEffect(() => { sendSyncEventRef.current = sendSyncEvent; }, [sendSyncEvent]);
+
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -188,11 +208,11 @@ export default function VideoPlayer({ swapped }) {
       setPaused(vid.paused);
     };
     const onEnded = () => {
-      if (isStreamer) {
+      if (isStreamerRef.current) {
         setVideoEnded(true);
         setNeedsStreamerStart(false);
         setPaused(true);
-        sendSyncEvent('pause', vid.currentTime);
+        sendSyncEventRef.current?.('pause', vid.currentTime);
       }
     };
 
@@ -209,7 +229,7 @@ export default function VideoPlayer({ swapped }) {
       vid.removeEventListener('pause', update);
       vid.removeEventListener('ended', onEnded);
     };
-  }, [hasFile, remoteStream, isStreamer, sendSyncEvent]);
+  }, []);
 
   // ─── Streamer-only controls ───
   const togglePlay = () => {

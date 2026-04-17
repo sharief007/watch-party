@@ -13,27 +13,22 @@ const CONFIG = {
   },
 
   ice: {
+    // Ordered fastest-first. STUN finishes gathering quickly, then TURN UDP,
+    // TURN TCP, TURNS (TLS). Keeps first-media-frame latency low while still
+    // penetrating strict mobile-carrier NAT.
     servers: [
-      // ── STUN servers ──────────────────────────────────────────────────────
-      // Google (5 independent servers)
+      // ── STUN ─────────────────────────────────────────────────────────────
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
-      // Mozilla
       { urls: 'stun:stun.services.mozilla.com' },
-      // Cloudflare
       { urls: 'stun:stun.cloudflare.com:3478' },
 
-      // ── TURN: OpenRelay by Metered.ca (no account needed) ────────────────
+      // ── TURN UDP (OpenRelay — no account needed) ─────────────────────────
       {
         urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:80?transport=tcp',
         username: 'openrelayproject',
         credential: 'openrelayproject',
       },
@@ -42,19 +37,32 @@ const CONFIG = {
         username: 'openrelayproject',
         credential: 'openrelayproject',
       },
+
+      // ── TURN TCP (fallback when UDP blocked) ─────────────────────────────
+      {
+        urls: 'turn:openrelay.metered.ca:80?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
       {
         urls: 'turn:openrelay.metered.ca:443?transport=tcp',
         username: 'openrelayproject',
         credential: 'openrelayproject',
       },
-      // TURNS (TLS) — penetrates strict mobile-carrier symmetric NAT
+
+      // ── TURNS (TLS) — strict symmetric-NAT fallback ──────────────────────
       {
         urls: 'turns:openrelay.metered.ca:443',
         username: 'openrelayproject',
         credential: 'openrelayproject',
       },
+      {
+        urls: 'turns:freestun.net:5349',
+        username: 'free',
+        credential: 'free',
+      },
 
-      // ── TURN: FreeSun (free, no account needed) ───────────────────────────
+      // ── TURN: FreeSun (last-resort UDP) ──────────────────────────────────
       {
         urls: 'turn:freestun.net:3478',
         username: 'free',
@@ -64,19 +72,6 @@ const CONFIG = {
         urls: 'turn:freestun.net:3479',
         username: 'free',
         credential: 'free',
-      },
-      // TURNS (TLS) variant
-      {
-        urls: 'turns:freestun.net:5349',
-        username: 'free',
-        credential: 'free',
-      },
-
-      // ── TURN: Numb by Viagenie (long-running free public server) ──────────
-      {
-        urls: 'turn:numb.viagenie.ca',
-        username: 'webrtc@live.com',
-        credential: 'muazkh',
       },
     ],
     // Pre-gather candidates before a call is made; reduces connection setup time

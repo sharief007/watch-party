@@ -2,11 +2,14 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { useRoom } from '../contexts/RoomContext';
 import styles from './CameraOverlay.module.css';
 
+// Responsive widths: floor / target-%-of-viewport / cap. Height auto-derives
+// from the 4:3 aspect-ratio on .videoBox in CSS. XL caps at 480 px on desktop
+// but shrinks to 66vw on narrow phones so it cannot overflow the viewport.
 const SIZES = [
-  { w: 140, h: 105, label: 'S' },
-  { w: 220, h: 165, label: 'M' },
-  { w: 340, h: 255, label: 'L' },
-  { w: 480, h: 360, label: 'XL' },
+  { w: 'clamp(120px, 22vw, 140px)', label: 'S' },
+  { w: 'clamp(160px, 32vw, 220px)', label: 'M' },
+  { w: 'clamp(200px, 48vw, 340px)', label: 'L' },
+  { w: 'clamp(240px, 66vw, 480px)', label: 'XL' },
 ];
 
 export default function CameraOverlay({ swapped, onSwap }) {

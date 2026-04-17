@@ -9,7 +9,11 @@ export default function TopBar({ chatOpen, onToggleChat }) {
     unreadCount,
   } = useRoom();
 
-  const statusLabel = status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting...' : 'Disconnected';
+  const statusLabel =
+    status === 'connected' ? 'Connected'
+    : status === 'connecting' ? 'Connecting...'
+    : status === 'reconnecting' ? 'Reconnecting...'
+    : 'Disconnected';
 
   // First tap on camera button starts the camera (user gesture required for mobile).
   // Subsequent taps toggle enable/disable.
