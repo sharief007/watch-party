@@ -1,0 +1,85 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  animation: fadeIn 0.15s ease-out;
+}
+
+.modal {
+  background: var(--bg-700, #1a1a26);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-lg, 0 12px 40px rgba(0,0,0,0.6));
+  width: 100%;
+  max-width: 380px;
+  padding: 24px;
+  animation: slideUp 0.2s ease-out;
+}
+
+.title {
+  margin: 0 0 8px;
+  color: var(--text-100, #fff);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.desc {
+  margin: 0 0 20px;
+  color: var(--text-300, #b8b8c8);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-md, 8px);
+  border: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition, 200ms ease);
+}
+
+.cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-100, #fff);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+}
+.cancel:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.confirm {
+  background: var(--red, #e94560);
+  color: white;
+}
+.confirm:hover {
+  background: #d63950;
+}
+.confirm:active {
+  transform: scale(0.97);
+}
+
+@media (max-width: 380px) {
+  .actions {
+    flex-direction: column-reverse;
+  }
+  .btn {
+    width: 100%;
+  }
+}

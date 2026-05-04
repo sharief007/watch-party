@@ -1,11 +1,12 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { useRoom } from '../contexts/RoomContext';
+import { useMediaSession } from '../hooks/usePresenceHints';
 import CONFIG from '../config';
 import styles from './VideoPlayer.module.css';
 
-export default function VideoPlayer({ swapped }) {
+export default function VideoPlayer() {
   const {
-    role, status, remoteStream, remoteCameraStream,
+    role, status, roomName, remoteStream,
     sendVideoStream, sendSyncEvent, startHeartbeat, stopHeartbeat, onSyncEvent,
     isSyncing, showSyncing,
     trackObjectUrl, trackVideoElement,
@@ -14,10 +15,13 @@ export default function VideoPlayer({ swapped }) {
   const videoRef = useRef(null);
   const captureStreamRef = useRef(null);
   const fileInputRef = useRef(null);
+  const currentFileUrlRef = useRef(null);
   const [hasFile, setHasFile] = useState(false);
   const [needsStreamerStart, setNeedsStreamerStart] = useState(false);
   const [videoEnded, setVideoEnded] = useState(false);
   const [needsUserPlay, setNeedsUserPlay] = useState(false);
+  const [fileError, setFileError] = useState(null);
+  const [captureUnsupported, setCaptureUnsupported] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [paused, setPaused] = useState(true);
@@ -28,6 +32,19 @@ export default function VideoPlayer({ swapped }) {
   const controlsTimer = useRef(null);
   const containerRef = useRef(null);
   const isStreamer = role === 'streamer';
+
+  // Try to grab a captureStream, retrying once the video is actually playing
+  // since Safari populates tracks only after playback starts.
+  const tryCaptureStream = useCallback((vid) => {
+    if (!vid) return null;
+    if (typeof vid.captureStream === 'function') {
+      try { return vid.captureStream(); } catch { return null; }
+    }
+    if (typeof vid.mozCaptureStream === 'function') {
+      try { return vid.mozCaptureStream(); } catch { return null; }
+    }
+    return null;
+  }, []);
 
   // ─── Streamer: file selection (works for initial + re-select) ───
   const handleFileSelect = (e) => {
@@ -40,9 +57,11 @@ export default function VideoPlayer({ swapped }) {
     setCurrentTime(0);
     setPaused(true);
     setNeedsStreamerStart(false);
+    setFileError(null);
 
     const url = URL.createObjectURL(file);
     trackObjectUrl(url);
+    currentFileUrlRef.current = url;
 
     const vid = videoRef.current;
     if (!vid) return;
@@ -55,16 +74,15 @@ export default function VideoPlayer({ swapped }) {
       setDuration(vid.duration);
       setHasFile(true);
 
-      let stream = null;
-      if (vid.captureStream) {
-        stream = vid.captureStream();
-      } else if (vid.mozCaptureStream) {
-        stream = vid.mozCaptureStream();
-      }
+      const stream = tryCaptureStream(vid);
       captureStreamRef.current = stream;
       trackVideoElement(vid);
 
-      if (stream && status === 'connected') {
+      if (!stream) {
+        // Browser does not support captureStream (e.g. iOS Safari). The
+        // streamer can still preview locally but nothing reaches the viewer.
+        setCaptureUnsupported(true);
+      } else if (status === 'connected') {
         sendVideoStream(stream);
         startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
       }
@@ -82,24 +100,25 @@ export default function VideoPlayer({ swapped }) {
     fileInputRef.current?.click();
   };
 
-  // Send stream when peer connects (if file already loaded)
+  // Send stream when peer connects (if file already loaded). Deps include the
+  // callbacks they use; React Hook lint can pass without disables.
   useEffect(() => {
     if (isStreamer && status === 'connected' && captureStreamRef.current) {
       sendVideoStream(captureStreamRef.current);
       const vid = videoRef.current;
       if (vid) startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, isStreamer, sendVideoStream, startHeartbeat]);
 
   // ─── Viewer: attach remote video stream ───
   // Don't autoplay with audio — show a "Tap to Watch" overlay instead.
   // This is the ONLY reliable cross-platform approach for mobile.
   useEffect(() => {
-    if (!isStreamer && remoteStream && videoRef.current && !swapped) {
+    if (!isStreamer && remoteStream && videoRef.current) {
       const vid = videoRef.current;
       vid.removeAttribute('src');
       vid.srcObject = remoteStream;
+      vid.volume = volume;
       vid.muted = true; // muted autoplay is allowed everywhere
       vid.play()
         .then(() => {
@@ -111,13 +130,32 @@ export default function VideoPlayer({ swapped }) {
           setNeedsUserPlay(true);
         });
     }
-  }, [remoteStream, isStreamer, swapped]);
+    // `volume` intentionally read via current state — re-binding on every
+    // volume change would restart playback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteStream, isStreamer]);
 
   // Streamer taps "Start Streaming" — real user gesture satisfies autoplay policy
   const handleStreamerStart = () => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.play().catch(() => {});
+    vid.play()
+      .then(() => {
+        // Some browsers (Safari) only populate captureStream tracks after
+        // playback begins. Retry once we know the element is playing.
+        if (!captureStreamRef.current) {
+          const stream = tryCaptureStream(vid);
+          if (stream) {
+            captureStreamRef.current = stream;
+            setCaptureUnsupported(false);
+            if (status === 'connected') {
+              sendVideoStream(stream);
+              startHeartbeat(() => ({ currentTime: vid.currentTime, paused: vid.paused }));
+            }
+          }
+        }
+      })
+      .catch(() => { /* noop */ });
     sendSyncEvent('play', vid.currentTime);
     setNeedsStreamerStart(false);
   };
@@ -127,29 +165,12 @@ export default function VideoPlayer({ swapped }) {
     const vid = videoRef.current;
     if (!vid) return;
     vid.muted = false;
+    vid.volume = volume;
     vid.play().catch(() => {});
     setNeedsUserPlay(false);
   };
 
-  // ─── Swapped mode ───
-  useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
-
-    if (swapped && remoteCameraStream) {
-      vid.srcObject = remoteCameraStream;
-      vid.play().catch(() => {});
-    } else if (!swapped && !isStreamer && remoteStream) {
-      vid.srcObject = remoteStream;
-      vid.play().catch(() => {});
-    }
-  }, [swapped, remoteCameraStream, remoteStream, isStreamer]);
-
   // ─── Sync: viewer receives events from streamer ───
-  // Read `needsUserPlay` from a ref inside the handler so the listener doesn't
-  // need to re-register when the overlay toggles. Sync events that auto-play
-  // are gated until the viewer has tapped "Start Watching"; otherwise the
-  // heartbeat would fight the tap-to-watch overlay and cause black flashes.
   const needsUserPlayRef = useRef(needsUserPlay);
   useEffect(() => { needsUserPlayRef.current = needsUserPlay; }, [needsUserPlay]);
 
@@ -190,9 +211,6 @@ export default function VideoPlayer({ swapped }) {
   }, [isStreamer, onSyncEvent, showSyncing]);
 
   // ─── Time tracking + ended detection ───
-  // The <video> element is stable across stream swaps, so we attach listeners
-  // once on mount. Avoiding re-binds on `remoteStream` change prevents a gap
-  // where sync events are missed whenever the streamer re-selects a file.
   const isStreamerRef = useRef(isStreamer);
   useEffect(() => { isStreamerRef.current = isStreamer; }, [isStreamer]);
   const sendSyncEventRef = useRef(sendSyncEvent);
@@ -215,12 +233,20 @@ export default function VideoPlayer({ swapped }) {
         sendSyncEventRef.current?.('pause', vid.currentTime);
       }
     };
+    const onError = () => {
+      if (isStreamerRef.current && vid.src) {
+        setFileError('Unable to load this video. Try a different file or format (MP4 / WebM recommended).');
+        setHasFile(false);
+        setNeedsStreamerStart(false);
+      }
+    };
 
     const interval = setInterval(update, 250);
     vid.addEventListener('loadedmetadata', update);
     vid.addEventListener('play', update);
     vid.addEventListener('pause', update);
     vid.addEventListener('ended', onEnded);
+    vid.addEventListener('error', onError);
 
     return () => {
       clearInterval(interval);
@@ -228,6 +254,7 @@ export default function VideoPlayer({ swapped }) {
       vid.removeEventListener('play', update);
       vid.removeEventListener('pause', update);
       vid.removeEventListener('ended', onEnded);
+      vid.removeEventListener('error', onError);
     };
   }, []);
 
@@ -265,36 +292,95 @@ export default function VideoPlayer({ swapped }) {
     if (videoRef.current) videoRef.current.volume = v;
   };
 
-  const toggleFullscreen = () => {
-    // Exit CSS-rotation fullscreen
+  const toggleFullscreen = async () => {
+    const container = containerRef.current;
+    const vid = videoRef.current;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+
+    // Exit any active fullscreen state.
     if (mobileFullscreen) {
       setMobileFullscreen(false);
+      try { await window.screen?.orientation?.unlock?.(); } catch { /* ignore */ }
+      return;
+    }
+    if (fsEl) {
+      try {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+      } catch { /* ignore */ }
+      try { await window.screen?.orientation?.unlock?.(); } catch { /* ignore */ }
       return;
     }
 
-    // On mobile with a landscape (rectangular) video, rotate rather than
-    // using requestFullscreen (which is unsupported on iOS Safari).
-    const isMobile = window.innerWidth <= 768 || navigator.maxTouchPoints > 0;
-    const vid = videoRef.current;
-    const isLandscape = vid && vid.videoWidth > 0 && vid.videoWidth > vid.videoHeight;
-    if (isMobile && isLandscape) {
-      setMobileFullscreen(true);
-      return;
+    const isLandscapeVid = vid && vid.videoWidth > 0 && vid.videoWidth > vid.videoHeight;
+
+    // Strategy 1: standard requestFullscreen on container (Android Chrome,
+    // desktop). After entering, lock screen orientation to landscape if the
+    // video is wider than tall, so the user gets a true cinema-style view
+    // without us doing any CSS rotation hacks.
+    const reqFs =
+      container?.requestFullscreen?.bind(container) ||
+      container?.webkitRequestFullscreen?.bind(container);
+    if (reqFs) {
+      try {
+        await reqFs();
+        if (isLandscapeVid) {
+          try { await window.screen?.orientation?.lock?.('landscape'); } catch { /* ignore */ }
+        }
+        return;
+      } catch {
+        // Fall through to the next strategy.
+      }
     }
 
-    // Desktop / portrait video: use native fullscreen
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      containerRef.current?.requestFullscreen?.();
+    // Strategy 2: iOS Safari. requestFullscreen on a generic element is not
+    // supported, but the native video element has its own fullscreen API
+    // that hands off to the iOS system player.
+    if (vid?.webkitEnterFullscreen) {
+      try { vid.webkitEnterFullscreen(); return; } catch { /* ignore */ }
     }
+
+    // Strategy 3 (last resort): cover the viewport via CSS, no rotation.
+    setMobileFullscreen(true);
   };
 
   useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    const handler = () => {
+      const fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      setIsFullscreen(fs);
+      if (!fs) {
+        try { window.screen?.orientation?.unlock?.(); } catch { /* ignore */ }
+      }
+    };
     document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
+    document.addEventListener('webkitfullscreenchange', handler);
+    return () => {
+      document.removeEventListener('fullscreenchange', handler);
+      document.removeEventListener('webkitfullscreenchange', handler);
+    };
   }, []);
+
+  // OS media controls (lock screen / notification shade). Streamer drives playback;
+  // viewer just shows metadata so the OS knows media is active and throttles less.
+  useMediaSession({
+    enabled: isStreamer ? hasFile : !!remoteStream,
+    title: roomName,
+    paused,
+    onPlay: isStreamer ? togglePlay : null,
+    onPause: isStreamer ? togglePlay : null,
+    onSeekBackward: isStreamer
+      ? (offset) => {
+          const vid = videoRef.current;
+          if (vid) seek(vid.currentTime - (offset || 10));
+        }
+      : null,
+    onSeekForward: isStreamer
+      ? (offset) => {
+          const vid = videoRef.current;
+          if (vid) seek(vid.currentTime + (offset || 10));
+        }
+      : null,
+  });
 
   const showControlsTemporarily = () => {
     setShowControls(true);
@@ -306,10 +392,11 @@ export default function VideoPlayer({ swapped }) {
 
   // Cleanup on unmount
   useEffect(() => {
+    const vid = videoRef.current;
+    const timer = controlsTimer;
     return () => {
       stopHeartbeat();
-      clearTimeout(controlsTimer.current);
-      const vid = videoRef.current;
+      clearTimeout(timer.current);
       if (vid) {
         vid.pause();
         vid.srcObject = null;
@@ -329,6 +416,21 @@ export default function VideoPlayer({ swapped }) {
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
+  // Keyboard-accessible overlay wrapper: turns a full-bleed div into a
+  // standard button role so VoiceOver / NVDA announce it correctly.
+  const overlayButtonProps = (onActivate) => ({
+    role: 'button',
+    tabIndex: 0,
+    onClick: onActivate,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onActivate();
+      }
+    },
+    style: { cursor: 'pointer' },
+  });
+
   return (
     <div
       ref={containerRef}
@@ -345,10 +447,14 @@ export default function VideoPlayer({ swapped }) {
 
         {/* Viewer: tap to unmute/start — required for mobile audio+video */}
         {needsUserPlay && !isStreamer && (
-          <div className={styles.overlay} onClick={handleViewerTap} style={{ cursor: 'pointer' }}>
+          <div
+            className={styles.overlay}
+            aria-label="Tap to start watching"
+            {...overlayButtonProps(handleViewerTap)}
+          >
             <div className={styles.tapToWatch}>
               <div className={styles.tapIcon}>
-                <svg width="56" height="56" viewBox="0 0 24 24" fill="white">
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="white" aria-hidden="true">
                   <polygon points="5,3 19,12 5,21" />
                 </svg>
               </div>
@@ -360,10 +466,14 @@ export default function VideoPlayer({ swapped }) {
 
         {/* Streamer: tap to begin playback after selecting a file */}
         {needsStreamerStart && isStreamer && (
-          <div className={styles.overlay} onClick={handleStreamerStart} style={{ cursor: 'pointer' }}>
+          <div
+            className={styles.overlay}
+            aria-label="Start streaming"
+            {...overlayButtonProps(handleStreamerStart)}
+          >
             <div className={styles.tapToWatch}>
               <div className={styles.tapIcon}>
-                <svg width="56" height="56" viewBox="0 0 24 24" fill="white">
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="white" aria-hidden="true">
                   <polygon points="5,3 19,12 5,21" />
                 </svg>
               </div>
@@ -380,22 +490,39 @@ export default function VideoPlayer({ swapped }) {
           accept="video/*"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
+          aria-hidden="true"
         />
 
         {/* Streamer: initial file picker overlay */}
-        {!hasFile && isStreamer && !swapped && (
+        {!hasFile && isStreamer && (
           <div className={styles.overlay}>
             <div className={styles.pickFile}>
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" aria-hidden="true">
                 <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
                 <polyline points="14,2 14,8 20,8" />
                 <path d="M12 18v-6M9 15l3-3 3 3" />
               </svg>
               <h3>Select a video file</h3>
               <p>Choose a video from your device to start streaming</p>
+              {fileError && <p className={styles.errorText || ''} style={{ color: '#e94560' }}>{fileError}</p>}
               <button className={styles.pickBtn} onClick={openFilePicker}>
                 Choose File
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Streamer: browser doesn't support MediaStream capture from <video> */}
+        {captureUnsupported && isStreamer && hasFile && (
+          <div className={styles.overlay}>
+            <div className={styles.pickFile}>
+              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#e94560" strokeWidth="1.5" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <h3>Streaming not supported</h3>
+              <p>This browser cannot capture video for streaming. Please use Chrome, Edge, or Firefox on desktop or Android.</p>
             </div>
           </div>
         )}
@@ -404,7 +531,7 @@ export default function VideoPlayer({ swapped }) {
         {videoEnded && isStreamer && (
           <div className={styles.overlay}>
             <div className={styles.pickFile}>
-              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5">
+              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" aria-hidden="true">
                 <circle cx="12" cy="12" r="10" />
                 <polyline points="16 12 12 8 8 12" />
                 <line x1="12" y1="16" x2="12" y2="8" />
@@ -424,7 +551,7 @@ export default function VideoPlayer({ swapped }) {
         )}
 
         {/* Viewer: waiting for stream */}
-        {!isStreamer && !remoteStream && !swapped && (
+        {!isStreamer && !remoteStream && (
           <div className={styles.overlay}>
             <div className={styles.waiting}>
               <div className={styles.loader} />
@@ -455,6 +582,7 @@ export default function VideoPlayer({ swapped }) {
                 step="0.1"
                 value={progressPct}
                 onChange={handleProgressChange}
+                aria-label="Seek"
               />
             )}
           </div>
@@ -464,42 +592,85 @@ export default function VideoPlayer({ swapped }) {
           <div className={styles.controlsLeft}>
             {isStreamer ? (
               <>
-                <button className={styles.ctrlBtn} onClick={togglePlay} title={paused ? 'Play' : 'Pause'}>
+                <button
+                  className={styles.ctrlBtn}
+                  onClick={() => seek(currentTime - 30)}
+                  title="Back 30s"
+                  aria-label="Back 30 seconds"
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span className={styles.seekLabel}>30</span>
+                </button>
+
+                <button
+                  className={`${styles.ctrlBtn} ${styles.seekFine}`}
+                  onClick={() => seek(currentTime - 10)}
+                  title="Back 10s"
+                  aria-label="Back 10 seconds"
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span className={styles.seekLabel}>10</span>
+                </button>
+
+                <button
+                  className={styles.ctrlBtn}
+                  onClick={togglePlay}
+                  title={paused ? 'Play' : 'Pause'}
+                  aria-label={paused ? 'Play' : 'Pause'}
+                >
                   {paused ? (
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                       <polygon points="5,3 19,12 5,21" />
                     </svg>
                   ) : (
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                       <rect x="5" y="3" width="4" height="18" rx="1" />
                       <rect x="15" y="3" width="4" height="18" rx="1" />
                     </svg>
                   )}
                 </button>
 
-                <button className={styles.ctrlBtn} onClick={() => seek(currentTime - 10)} title="Back 10s">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M2.5 2v6h6M2.5 8a10 10 0 1018 2" />
+                <button
+                  className={`${styles.ctrlBtn} ${styles.seekFine}`}
+                  onClick={() => seek(currentTime + 10)}
+                  title="Forward 10s"
+                  aria-label="Forward 10 seconds"
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+                    <path d="M21 3v5h-5" />
                   </svg>
                   <span className={styles.seekLabel}>10</span>
                 </button>
 
-                <button className={styles.ctrlBtn} onClick={() => seek(currentTime + 10)} title="Forward 10s">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M21.5 2v6h-6M21.5 8A10 10 0 103.5 10" />
+                <button
+                  className={styles.ctrlBtn}
+                  onClick={() => seek(currentTime + 30)}
+                  title="Forward 30s"
+                  aria-label="Forward 30 seconds"
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+                    <path d="M21 3v5h-5" />
                   </svg>
-                  <span className={styles.seekLabel}>10</span>
+                  <span className={styles.seekLabel}>30</span>
                 </button>
               </>
             ) : (
               <span className={styles.viewerLabel}>
                 {paused ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ opacity: 0.5 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ opacity: 0.5 }} aria-hidden="true">
                     <rect x="5" y="3" width="4" height="18" rx="1" />
                     <rect x="15" y="3" width="4" height="18" rx="1" />
                   </svg>
                 ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ opacity: 0.5 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ opacity: 0.5 }} aria-hidden="true">
                     <polygon points="5,3 19,12 5,21" />
                   </svg>
                 )}
@@ -512,15 +683,20 @@ export default function VideoPlayer({ swapped }) {
 
           <div className={styles.controlsRight}>
             {isStreamer && hasFile && (
-              <button className={styles.changeBtn} onClick={openFilePicker} title="Change video">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <button
+                className={styles.changeBtn}
+                onClick={openFilePicker}
+                title="Change video"
+                aria-label="Change video"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
                   <polyline points="14,2 14,8 20,8" />
                 </svg>
               </button>
             )}
             <div className={styles.volumeGroup}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <polygon points="11,5 6,9 2,9 2,15 6,15 11,19" fill="currentColor" />
                 {volume > 0 && <path d="M15.54 8.46a5 5 0 010 7.07" />}
                 {volume > 0.5 && <path d="M19.07 4.93a10 10 0 010 14.14" />}
@@ -533,11 +709,17 @@ export default function VideoPlayer({ swapped }) {
                 step="0.05"
                 value={volume}
                 onChange={handleVolumeChange}
+                aria-label="Volume"
               />
             </div>
 
-            <button className={styles.ctrlBtn} onClick={toggleFullscreen} title="Fullscreen">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <button
+              className={styles.ctrlBtn}
+              onClick={toggleFullscreen}
+              title="Fullscreen"
+              aria-label={isFullscreen || mobileFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                 {isFullscreen || mobileFullscreen ? (
                   <path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M3 16h3a2 2 0 012 2v3M16 21v-3a2 2 0 012-2h3" />
                 ) : (

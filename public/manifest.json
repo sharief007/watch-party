@@ -3,7 +3,10 @@
   "short_name": "Watch Party",
   "description": "Watch videos together in sync",
   "start_url": "/watch-party/",
+  "scope": "/watch-party/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#0f0f1a",
   "theme_color": "#0f0f1a",
   "icons": [
@@ -11,7 +14,7 @@
       "src": "icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }

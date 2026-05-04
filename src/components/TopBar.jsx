@@ -1,13 +1,22 @@
 import { useRoom } from '../contexts/RoomContext';
 import styles from './TopBar.module.css';
 
-export default function TopBar({ chatOpen, onToggleChat }) {
+export default function TopBar({
+  chatOpen,
+  onToggleChat,
+  onRequestLeave,
+  showRemoteCam,
+  onToggleRemoteCam,
+  hasRemoteCam,
+}) {
   const {
     status, role, roomName, leaveRoom,
     cameraEnabled, micEnabled, toggleCamera, toggleMic,
     localCameraStream, startCamera,
     unreadCount,
   } = useRoom();
+
+  const handleLeaveClick = onRequestLeave || leaveRoom;
 
   const statusLabel =
     status === 'connected' ? 'Connected'
@@ -37,8 +46,8 @@ export default function TopBar({ chatOpen, onToggleChat }) {
   return (
     <header className={styles.bar}>
       <div className={styles.left}>
-        <button className={styles.backBtn} onClick={leaveRoom} title="Leave room">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <button className={styles.backBtn} onClick={handleLeaveClick} title="Leave room" aria-label="Leave room">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
         </button>
@@ -57,6 +66,8 @@ export default function TopBar({ chatOpen, onToggleChat }) {
           className={`${styles.iconBtn} ${localCameraStream && !micEnabled ? styles.off : ''} ${!localCameraStream ? styles.inactive : ''}`}
           onClick={handleMicClick}
           title={!localCameraStream ? 'Enable mic' : micEnabled ? 'Mute mic' : 'Unmute mic'}
+          aria-label={!localCameraStream ? 'Enable mic' : micEnabled ? 'Mute mic' : 'Unmute mic'}
+          aria-pressed={!!localCameraStream && !micEnabled}
         >
           {localCameraStream && !micEnabled ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -80,6 +91,8 @@ export default function TopBar({ chatOpen, onToggleChat }) {
           className={`${styles.iconBtn} ${localCameraStream && !cameraEnabled ? styles.off : ''} ${!localCameraStream ? styles.inactive : ''}`}
           onClick={handleCameraClick}
           title={!localCameraStream ? 'Enable camera' : cameraEnabled ? 'Disable camera' : 'Enable camera'}
+          aria-label={!localCameraStream ? 'Enable camera' : cameraEnabled ? 'Disable camera' : 'Enable camera'}
+          aria-pressed={!!localCameraStream && !cameraEnabled}
         >
           {localCameraStream && !cameraEnabled ? (
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -94,10 +107,34 @@ export default function TopBar({ chatOpen, onToggleChat }) {
           )}
         </button>
 
+        {hasRemoteCam && (
+          <button
+            className={`${styles.iconBtn} ${!showRemoteCam ? styles.off : ''}`}
+            onClick={onToggleRemoteCam}
+            title={showRemoteCam ? 'Hide remote camera' : 'Show remote camera'}
+            aria-label={showRemoteCam ? 'Hide remote camera' : 'Show remote camera'}
+            aria-pressed={!showRemoteCam}
+          >
+            {showRemoteCam ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            )}
+          </button>
+        )}
+
         <button
           className={`${styles.iconBtn} ${styles.chatBtn}`}
           onClick={onToggleChat}
           title="Toggle chat"
+          aria-label={chatOpen ? 'Close chat' : 'Open chat'}
+          aria-pressed={!!chatOpen}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />

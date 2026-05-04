@@ -14,10 +14,10 @@ export default function ChatPanel({ open, onClose }) {
     }
   }, [chatMessages]);
 
-  // Clear unread when opened
+  // Clear unread both on open and whenever new messages arrive while open.
   useEffect(() => {
     if (open) setUnreadCount(0);
-  }, [open, setUnreadCount]);
+  }, [open, chatMessages, setUnreadCount]);
 
   const handleSend = () => {
     if (!input.trim()) return;
@@ -33,8 +33,8 @@ export default function ChatPanel({ open, onClose }) {
     <div className={`${styles.panel} ${open ? styles.open : ''}`}>
       <div className={styles.header}>
         <h3>Chat</h3>
-        <button className={styles.closeBtn} onClick={onClose}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <button className={styles.closeBtn} onClick={onClose} aria-label="Close chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18" />
             <line x1="6" y1="6" x2="18" y2="18" />
           </svg>
@@ -51,7 +51,7 @@ export default function ChatPanel({ open, onClose }) {
           </div>
         )}
         {chatMessages.map((msg, i) => (
-          <div key={`${msg.timestamp}-${i}`} className={`${styles.msg} ${msg.isMine ? styles.mine : styles.theirs}`}>
+          <div key={msg.id || `${msg.timestamp}-${i}`} className={`${styles.msg} ${msg.isMine ? styles.mine : styles.theirs}`}>
             <div className={styles.bubble}>
               {msg.text}
             </div>
@@ -70,8 +70,8 @@ export default function ChatPanel({ open, onClose }) {
           placeholder="Type a message..."
           autoComplete="off"
         />
-        <button className={styles.sendBtn} onClick={handleSend} disabled={!input.trim()}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <button className={styles.sendBtn} onClick={handleSend} disabled={!input.trim()} aria-label="Send message">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <line x1="22" y1="2" x2="11" y2="13" />
             <polygon points="22,2 15,22 11,13 2,9" />
           </svg>

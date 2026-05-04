@@ -12,8 +12,8 @@ const SIZES = [
   { w: 'clamp(240px, 66vw, 480px)', label: 'XL' },
 ];
 
-export default function CameraOverlay({ swapped, onSwap }) {
-  const { remoteCameraStream, localCameraStream, remoteStream, role } = useRoom();
+export default function CameraOverlay({ showRemoteCam = true }) {
+  const { remoteCameraStream, localCameraStream } = useRoom();
   const remoteRef = useRef(null);
   const localRef = useRef(null);
   const [sizeIdx, setSizeIdx] = useState(1); // start at M
@@ -22,18 +22,13 @@ export default function CameraOverlay({ swapped, onSwap }) {
   const dragStart = useRef(null);
   const overlayRef = useRef(null);
 
-  // In swapped mode, PiP shows the video stream instead of the camera
-  const pipStream = swapped
-    ? (role === 'streamer' ? null : remoteStream)
-    : remoteCameraStream;
-
   // Attach streams
   useEffect(() => {
-    if (remoteRef.current && pipStream) {
-      remoteRef.current.srcObject = pipStream;
+    if (remoteRef.current && remoteCameraStream && showRemoteCam) {
+      remoteRef.current.srcObject = remoteCameraStream;
       remoteRef.current.play().catch(() => {});
     }
-  }, [pipStream]);
+  }, [remoteCameraStream, showRemoteCam]);
 
   useEffect(() => {
     if (localRef.current && localCameraStream) {
@@ -45,6 +40,20 @@ export default function CameraOverlay({ swapped, onSwap }) {
   const cycleSize = () => {
     setSizeIdx(i => (i + 1) % SIZES.length);
   };
+
+  // Clamp a position so the overlay stays inside the viewport. Uses the
+  // current bounding box for size, falling back to sensible defaults.
+  const clampPos = useCallback((x, y) => {
+    const el = overlayRef.current;
+    const w = el ? el.offsetWidth : 200;
+    const h = el ? el.offsetHeight : 150;
+    const maxX = Math.max(0, window.innerWidth - w);
+    const maxY = Math.max(0, window.innerHeight - h);
+    return {
+      x: Math.min(Math.max(0, x), maxX),
+      y: Math.min(Math.max(0, y), maxY),
+    };
+  }, []);
 
   // Dragging
   const onPointerDown = useCallback((e) => {
@@ -61,23 +70,43 @@ export default function CameraOverlay({ swapped, onSwap }) {
   useEffect(() => {
     if (!dragging) return;
     const onMove = (e) => {
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      setPos({
-        x: clientX - dragStart.current.offsetX,
-        y: clientY - dragStart.current.offsetY,
-      });
+      // Pointer events carry clientX/clientY directly; no TouchEvent fallback
+      // is needed because we're listening to pointermove, not touchmove.
+      const next = clampPos(
+        e.clientX - dragStart.current.offsetX,
+        e.clientY - dragStart.current.offsetY,
+      );
+      setPos(next);
     };
     const onUp = () => setDragging(false);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     };
-  }, [dragging]);
+  }, [dragging, clampPos]);
 
-  const hasRemote = !!pipStream;
+  // Re-clamp when viewport changes (device rotation, window resize) so the
+  // overlay cannot end up outside the visible area.
+  useEffect(() => {
+    const onResize = () => {
+      setPos(prev => {
+        if (prev.x === null || prev.y === null) return prev;
+        return clampPos(prev.x, prev.y);
+      });
+    };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  }, [clampPos]);
+
+  const hasRemote = !!remoteCameraStream && showRemoteCam;
   const hasLocal = !!localCameraStream;
   if (!hasRemote && !hasLocal) return null;
 
@@ -93,7 +122,7 @@ export default function CameraOverlay({ swapped, onSwap }) {
       style={{ width: size.w, ...posStyle }}
       onPointerDown={onPointerDown}
     >
-      {/* Remote camera (or video when swapped) */}
+      {/* Remote camera */}
       {hasRemote && (
         <div className={styles.videoBox}>
           <video
@@ -101,14 +130,13 @@ export default function CameraOverlay({ swapped, onSwap }) {
             className={styles.video}
             playsInline
             autoPlay
-            muted={swapped}
           />
-          <span className={styles.label}>{swapped ? 'Video' : 'Remote'}</span>
+          <span className={styles.label}>Remote</span>
         </div>
       )}
 
       {/* Local camera */}
-      {hasLocal && !swapped && (
+      {hasLocal && (
         <div className={`${styles.videoBox} ${styles.local}`}>
           <video
             ref={localRef}
@@ -123,16 +151,13 @@ export default function CameraOverlay({ swapped, onSwap }) {
 
       {/* Controls */}
       <div className={styles.controls}>
-        <button className={styles.ctrlBtn} onClick={onSwap} title="Swap with main video">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <polyline points="17 1 21 5 17 9" />
-            <path d="M3 11V9a4 4 0 014-4h14" />
-            <polyline points="7 23 3 19 7 15" />
-            <path d="M21 13v2a4 4 0 01-4 4H3" />
-          </svg>
-        </button>
-        <button className={styles.ctrlBtn} onClick={cycleSize} title={`Size: ${SIZES[(sizeIdx + 1) % SIZES.length].label}`}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+        <button
+          className={styles.ctrlBtn}
+          onClick={cycleSize}
+          title={`Size: ${SIZES[(sizeIdx + 1) % SIZES.length].label}`}
+          aria-label={`Change size (current: ${size.label})`}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
             <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
           </svg>
         </button>

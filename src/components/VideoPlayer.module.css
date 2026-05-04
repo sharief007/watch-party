@@ -188,18 +188,18 @@
   animation: pulse 0.8s ease-in-out infinite;
 }
 
-/* Controls */
+/* Controls — stack-overlaid on top of video, gradient backdrop */
 .controls {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 0 0 12px;
-  background: linear-gradient(transparent, rgba(0,0,0,0.9) 40%);
+  padding: 0 0 calc(12px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.55) 50%, transparent 100%);
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.3s, transform 0.3s;
-  z-index: 20;
+  z-index: 25;
   pointer-events: none;
 }
 .controls.visible {
@@ -271,12 +271,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 4px 12px 0;
+  gap: 8px;
 }
 
 .controlsLeft, .controlsRight {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 
 .ctrlBtn {
@@ -284,27 +286,36 @@
   align-items: center;
   justify-content: center;
   position: relative;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   background: transparent;
   border: none;
   color: var(--text-200);
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all var(--transition);
+  flex-shrink: 0;
 }
 .ctrlBtn:hover {
   background: rgba(255,255,255,0.08);
   color: white;
 }
+.ctrlBtn:active {
+  background: rgba(255,255,255,0.14);
+  transform: scale(0.94);
+}
 
 .seekLabel {
   position: absolute;
-  font-size: 0.55rem;
+  font-size: 0.6rem;
   font-weight: 700;
   color: var(--text-200);
-  bottom: 6px;
-  right: 6px;
+  top: 56%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  letter-spacing: -0.5px;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .viewerLabel {
@@ -360,12 +371,39 @@
 @media (max-width: 600px) {
   .volumeGroup { display: none; }
   .time { font-size: 0.7rem; }
-  .ctrlBtn { width: 36px; height: 36px; }
 }
 
-/* ─── Mobile fullscreen: CSS rotation for landscape videos ─── */
-/* Covers the viewport and rotates the video 90deg so a landscape  */
-/* video fills the full portrait screen — works on iOS Safari too. */
+@media (max-width: 480px) {
+  .controlsRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 4px 8px 0;
+  }
+  .controlsLeft {
+    justify-content: center;
+    gap: 2px;
+  }
+  .controlsRight {
+    justify-content: flex-end;
+    gap: 2px;
+  }
+  .time {
+    flex: 1;
+    text-align: center;
+  }
+  .seekLabel {
+    font-size: 0.6rem;
+  }
+  /* Hide ±10s on small phones; only ±30s shows. The container goes
+     fullscreen-landscape on tap and viewport width grows past 480px, so
+     this rule no longer applies and all four buttons reappear. */
+  .seekFine { display: none; }
+}
+
+/* ─── CSS-cover fullscreen fallback ─── */
+/* Used only when neither requestFullscreen nor webkitEnterFullscreen is */
+/* available. No rotation — the viewport is left in its natural orientation. */
 .mobileFullscreen {
   position: fixed;
   inset: 0;
@@ -375,11 +413,14 @@
 }
 
 .mobileFullscreen .videoWrapper {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  /* Swap vw/vh so the element is landscape-sized */
-  width: 100vh;
-  height: 100vw;
-  transform: translate(-50%, -50%) rotate(90deg);
+  width: 100vw;
+  height: 100vh;
+}
+
+/* When in native browser fullscreen, the container itself is the fullscreen
+   element. Make sure the video region uses the entire screen. */
+.container:fullscreen,
+.container:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
 }
