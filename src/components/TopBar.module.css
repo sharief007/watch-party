@@ -2,8 +2,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  height: 56px;
+  /* Reserve space for iPhone notch / Dynamic Island when running as a
+     standalone PWA with viewport-fit=cover. Safe-area insets resolve to 0
+     in normal browser windows, so non-iOS layouts are unaffected. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  height: calc(56px + env(safe-area-inset-top, 0px));
   background: var(--glass);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);

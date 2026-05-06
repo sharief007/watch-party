@@ -116,6 +116,9 @@
   display: flex;
   gap: 8px;
   padding: 12px 16px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  padding-right: calc(16px + env(safe-area-inset-right, 0px));
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }

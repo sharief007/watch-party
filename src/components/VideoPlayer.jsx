@@ -33,17 +33,78 @@ export default function VideoPlayer() {
   const containerRef = useRef(null);
   const isStreamer = role === 'streamer';
 
-  // Try to grab a captureStream, retrying once the video is actually playing
-  // since Safari populates tracks only after playback starts.
+  // iOS-Safari fallback: when HTMLMediaElement.captureStream is missing, draw
+  // the video onto a canvas and route audio through WebAudio. The result is a
+  // MediaStream that WebRTC can ship to the viewer just like a native one.
+  const polyfillCaptureRef = useRef(null);
+
   const tryCaptureStream = useCallback((vid) => {
     if (!vid) return null;
+
+    // 1) Native captureStream (Chrome/Edge/Brave/Android).
     if (typeof vid.captureStream === 'function') {
-      try { return vid.captureStream(); } catch { return null; }
+      try {
+        const s = vid.captureStream();
+        if (s && s.getTracks().length > 0) return s;
+      } catch { /* fall through to polyfill */ }
     }
     if (typeof vid.mozCaptureStream === 'function') {
-      try { return vid.mozCaptureStream(); } catch { return null; }
+      try {
+        const s = vid.mozCaptureStream();
+        if (s) return s;
+      } catch { /* fall through */ }
     }
-    return null;
+
+    // 2) Polyfill (iOS Safari). Needs videoWidth — call after loadedmetadata.
+    if (!vid.videoWidth || !vid.videoHeight) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = vid.videoWidth;
+    canvas.height = vid.videoHeight;
+    if (typeof canvas.captureStream !== 'function') return null;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // Stop any previous rAF pump (e.g. user picked a new file).
+    polyfillCaptureRef.current?.stop?.();
+
+    let stopped = false;
+    const pump = () => {
+      if (stopped) return;
+      if (vid.readyState >= 2) {
+        try { ctx.drawImage(vid, 0, 0, canvas.width, canvas.height); } catch { /* ignore */ }
+      }
+      requestAnimationFrame(pump);
+    };
+    requestAnimationFrame(pump);
+
+    const videoStream = canvas.captureStream(24);
+
+    // Audio: createMediaElementSource may be called only ONCE per element, so
+    // cache the graph on the element itself for subsequent file changes.
+    let audioTracks = [];
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        if (!vid._wpAudio) {
+          const audioCtx = new AC();
+          const source = audioCtx.createMediaElementSource(vid);
+          const dest = audioCtx.createMediaStreamDestination();
+          source.connect(dest);
+          source.connect(audioCtx.destination); // keep local playback audible
+          vid._wpAudio = { audioCtx, source, dest };
+        }
+        audioTracks = vid._wpAudio.dest.stream.getAudioTracks();
+        // resume() succeeds when called inside a user gesture (Start Streaming).
+        vid._wpAudio.audioCtx.resume?.().catch(() => {});
+      }
+    } catch { /* createMediaElementSource can fail in rare cases — ignore */ }
+
+    polyfillCaptureRef.current = { stop: () => { stopped = true; } };
+
+    return new MediaStream([
+      ...videoStream.getVideoTracks(),
+      ...audioTracks,
+    ]);
   }, []);
 
   // ─── Streamer: file selection (works for initial + re-select) ───
@@ -139,6 +200,9 @@ export default function VideoPlayer() {
   const handleStreamerStart = () => {
     const vid = videoRef.current;
     if (!vid) return;
+    // If the iOS polyfill is engaged, this gesture is what unblocks the
+    // AudioContext so audio actually flows.
+    vid._wpAudio?.audioCtx?.resume?.().catch(() => {});
     vid.play()
       .then(() => {
         // Some browsers (Safari) only populate captureStream tracks after
@@ -397,6 +461,8 @@ export default function VideoPlayer() {
     return () => {
       stopHeartbeat();
       clearTimeout(timer.current);
+      polyfillCaptureRef.current?.stop?.();
+      polyfillCaptureRef.current = null;
       if (vid) {
         vid.pause();
         vid.srcObject = null;
